@@ -1,0 +1,10 @@
+{
+  "experiment_name": "ma_single_v1",
+  "data_file": "data/raw/510300.csv",
+  "fast": 5,
+  "slow": 20,
+  "commission": 0.0003,
+  "slippage": 0.0001,
+  "stamp_tax_sell": 0.0,
+  "output_dir": "output/ma_single_v1"
+}

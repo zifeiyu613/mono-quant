@@ -1,0 +1,17 @@
+{
+  "experiment_name": "momentum_topn_v2",
+  "strategy": "momentum_topn",
+  "asset_files": {
+    "hs300": "data/raw/hs300.csv",
+    "zz500": "data/raw/zz500.csv",
+    "cyb": "data/raw/cyb.csv",
+    "dividend": "data/raw/dividend.csv"
+  },
+  "lookback": 20,
+  "rebalance_freq": 20,
+  "top_n": 2,
+  "commission": 0.0003,
+  "slippage": 0.0001,
+  "stamp_tax_sell": 0.0,
+  "output_dir": "output/momentum_topn_v2"
+}

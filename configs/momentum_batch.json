@@ -1,0 +1,15 @@
+{
+  "experiment_name": "momentum_batch_v4",
+  "strategy": "momentum_batch",
+  "asset_files": {
+    "hs300": "data/raw/hs300.csv",
+    "zz500": "data/raw/zz500.csv",
+    "cyb": "data/raw/cyb.csv",
+    "dividend": "data/raw/dividend.csv"
+  },
+  "lookbacks": [20, 60],
+  "rebalance_freqs": [20, 60],
+  "top_ns": [1, 2, 3],
+  "unit_costs": [0.0002, 0.0004],
+  "output_dir": "output/momentum_batch_v4"
+}
