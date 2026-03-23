@@ -1,6 +1,6 @@
 # mono-quant
 
-一个面向 A股 ETF 的 Rust 量化项目原型。
+一个基于 Rust 的 A股 ETF 量化研究与回测项目。
 
 ## 当前能力
 - 读取单个 ETF CSV（日线）
@@ -13,6 +13,9 @@
 - 输出批量实验总表、实验索引、阶段报告
 - 支持 Tushare ETF 日线真实数据下载
 - 支持增量更新与基础数据校验
+- 支持 processed 层构建（共同日期对齐 + 标准化输出）
+- 支持 processed 层摘要输出（summary + manifest）
+- 多资产回测默认优先读取 `data/processed/`
 
 ## 快速开始
 
@@ -21,17 +24,22 @@
 cargo run -- --config configs/ma_single.json
 ```
 
-### 2. 多 ETF 动量轮动
+### 2. 准备真实数据（推荐）
+```bash
+./scripts/prepare_data.sh scripts/fetch_config.json
+```
+
+### 3. 多 ETF 动量轮动（processed-first）
 ```bash
 cargo run -- --config configs/momentum_topn.json
 ```
 
-### 3. 批量实验
+### 4. 批量实验（processed-first）
 ```bash
 cargo run -- --config configs/momentum_batch.json
 ```
 
-## 真实数据接入（Tushare）
+## 真实数据工作流
 安装依赖：
 ```bash
 pip install -r scripts/requirements.txt
@@ -42,25 +50,34 @@ pip install -r scripts/requirements.txt
 export TUSHARE_TOKEN=你的token
 ```
 
-### 全量拉取
+### 全量拉取 raw 数据
 ```bash
 python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json --full
 ```
 
-### 增量更新
+### 增量更新 raw 数据
 ```bash
 python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json
 ```
 
-### 校验数据
+### 校验 raw 数据
 ```bash
 python scripts/validate_etf_csv.py --dir data/raw
 ```
 
-### 一条命令更新 + 校验
+### 构建 processed 层
 ```bash
-./scripts/update_and_validate.sh scripts/fetch_config.json
+python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 ```
+
+### 一条命令完成更新 + 校验 + processed 构建
+```bash
+./scripts/prepare_data.sh scripts/fetch_config.json
+```
+
+> 如果多资产回测提示缺少 `data/processed/*.csv`、`alignment_manifest.json`、
+> `processed_summary.json` 或 `processed_summary.txt`，
+> 先运行上面的 `prepare_data.sh`。
 
 更多说明见：
 - `docs/real-data.md`
@@ -69,6 +86,7 @@ python scripts/validate_etf_csv.py --dir data/raw
 ```text
 configs/
 data/raw/
+data/processed/
 docs/
 output/
 scripts/

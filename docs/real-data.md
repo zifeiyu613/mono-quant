@@ -1,143 +1,202 @@
 # 真实数据接入说明（Tushare ETF 日线）
 
-当前项目已经支持用 **Tushare 的 `fund_daily` 接口** 拉取 A股 ETF 日线数据，并补上了：
+当前项目已经支持：
+- **真实 ETF 日线下载**
 - **增量更新**
 - **本地 CSV 校验**
+- **processed 层构建（对齐、标准化、稳定回测输入）**
+- **processed 层摘要输出（summary + manifest）**
 
-## 为什么先用 Tushare
-- 官方接口相对稳定
-- 覆盖 ETF 日线足够入门
-- 字段清晰：`trade_date, open, high, low, close, vol, amount`
-- 适合先把“真实数据 -> Rust 回测”链路打通
+---
 
-## 官方接口信息
-- 接口名：`fund_daily`
-- 用途：ETF 日线行情
-- 关键参数：`ts_code`, `start_date`, `end_date`
-- 典型代码：`510300.SH`, `510500.SH`, `159915.SZ`, `510880.SH`
+## 一、为什么要引入 processed 层？
 
-## 前提
-你需要：
-1. 一个 Tushare 账号
-2. 一个可用的 Token
-3. 满足 ETF 日线接口所需积分权限
+`raw/` 和 `processed/` 的职责应该分开：
 
-## 安装 Python 依赖
+### `data/raw/`
+表示：
+- 从 Tushare 拉下来的原始数据
+- 尽量保留原始字段
+- 用于留档与重新处理
+
+### `data/processed/`
+表示：
+- 已经过统一清洗
+- 已经过日期对齐
+- 已经适合直接送给回测引擎
+
+### 为什么这很重要？
+因为如果你让回测直接吃 `raw/`，会越来越容易出问题：
+- 日期不齐
+- 字段不一致
+- 不同资产长度不同
+- 重复行 / 排序问题混进回测逻辑里
+
+更合理的做法是：
+
+**下载层负责拿数据，processed 层负责把数据整理成“稳定输入”。**
+
+---
+
+## 二、当前支持的真实数据流程
+
+### 第一步：安装依赖
 ```bash
 pip install -r scripts/requirements.txt
 ```
 
-## 设置 Token
+### 第二步：设置 Tushare Token
 ```bash
 export TUSHARE_TOKEN=你的token
 ```
 
-## 全量下载
+### 第三步：首次全量拉取
 ```bash
 python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json --full
 ```
 
-## 增量更新
-默认不加 `--full` 就是增量模式：
+### 第四步：之后增量更新
 ```bash
 python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json
 ```
 
-脚本会：
-- 检查本地是否已有 CSV
-- 如果有，读取最后一个 `date`
-- 从 **下一天** 开始继续拉取
-- 自动与本地数据合并
-- 自动按 `date` 去重并升序排序
-
-## 数据校验
-### 校验整个目录
+### 第五步：校验 raw 层
 ```bash
 python scripts/validate_etf_csv.py --dir data/raw
 ```
 
-### 校验单个文件
+### 第六步：构建 processed 层
 ```bash
-python scripts/validate_etf_csv.py --file data/raw/hs300.csv
+python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 ```
 
-## 一条命令更新 + 校验
+### 一条命令完成更新 + 校验 + processed 构建
 ```bash
-./scripts/update_and_validate.sh scripts/fetch_config.json
+./scripts/prepare_data.sh scripts/fetch_config.json
 ```
 
-## 校验内容
-当前会检查：
-- 必要字段是否存在：`date`, `open`, `close`
-- `date` 是否是合法 `YYYY-MM-DD`
-- 日期是否升序
-- 日期是否重复
-- 价格列是否为正数
-- `high >= low`（如果字段存在）
-- 必填字段是否为空
+---
 
-## 输出位置
-脚本会把 CSV 写到：
+## 三、processed 层现在做了什么
+
+当前 `scripts/build_processed_etf_data.py` 会做这些事：
+
+1. 读取你配置中的多个 ETF 原始文件
+2. 校验最基本字段是否存在（至少 `date/open/close`）
+3. 按日期升序排序
+4. 去掉重复日期
+5. 计算所有资产的**共同日期交集**
+6. 只保留共同日期
+7. 按统一列顺序输出到 `data/processed/`
+8. 输出 `alignment_manifest.json`
+9. 输出 `processed_summary.json`
+10. 输出 `processed_summary.txt`
+
+---
+
+## 四、processed 层输出什么
+
+### 输出目录
 ```text
-data/raw/
+data/processed/
 ```
 
-默认会生成：
-- `data/raw/hs300.csv`
-- `data/raw/zz500.csv`
-- `data/raw/cyb.csv`
-- `data/raw/dividend.csv`
+### 当前会生成
+- `data/processed/hs300.csv`
+- `data/processed/zz500.csv`
+- `data/processed/cyb.csv`
+- `data/processed/dividend.csv`
+- `data/processed/alignment_manifest.json`
+- `data/processed/processed_summary.json`
+- `data/processed/processed_summary.txt`
 
-## CSV 字段
-脚本输出字段：
+### `alignment_manifest.json` 作用
+它会记录：
+- 一共对齐了多少资产
+- 最终共同日期有多少行
+- 对齐后的起止日期
+- 每个输出文件路径和行数
+
+### `processed_summary.json / txt` 作用
+它会记录：
+- 当前 processed 数据层的总览
+- 每个资产 raw 行数 / processed 行数
+- 每个资产丢掉了多少行
+- raw 日期范围与 processed 日期范围
+- 是否完全对齐
+
+这非常适合做回测前核对。
+
+---
+
+## 五、Rust 现在如何使用 processed 摘要
+
+多资产回测启动时，现在会先检查：
+- `data/processed/*.csv`
+- `alignment_manifest.json`
+- `processed_summary.json`
+- `processed_summary.txt`
+
+然后会在日志里打印 processed 摘要前几行。
+
+如果缺失，会提示你先运行：
+```bash
+./scripts/prepare_data.sh scripts/fetch_config.json
+```
+
+---
+
+## 六、为什么 processed 层更适合回测
+
+因为现在回测读到的数据会更稳定：
+- 日期一致
+- 行数一致
+- 字段顺序统一
+- 不需要每次在引擎里重新处理 raw 层脏活
+- 启动前能看到本次使用的数据摘要
+
+你可以把它理解成：
+
+- `raw/` = 原始档案
+- `processed/` = 可直接上引擎的标准化数据层
+- `processed_summary.*` = 本次数据批次说明书
+
+---
+
+## 七、建议你接下来怎么用
+
+### 单 ETF
+单 ETF 仍然可以先直接吃 `raw/`，因为问题不大。
+
+### 多 ETF / 动量轮动 / 批量实验
+从现在开始，更推荐你逐渐切到吃：
 ```text
-date,open,high,low,close,vol,amount
+data/processed/*.csv
 ```
 
-当前 Rust 回测最核心依赖的是：
-- `date`
-- `open`
-- `close`
-
-## 接入当前 Rust 项目
-### 单 ETF 版本
-修改 `configs/ma_single.json` 中的 `data_file` 指向某个真实 CSV，例如：
-```json
-"data_file": "data/raw/hs300.csv"
-```
-然后执行：
+并且默认按下面流程：
 ```bash
-cargo run -- --config configs/ma_single.json
-```
-
-### 多 ETF 动量轮动版本
-```bash
+./scripts/prepare_data.sh scripts/fetch_config.json
 cargo run -- --config configs/momentum_topn.json
-```
-
-### 批量实验版本
-```bash
 cargo run -- --config configs/momentum_batch.json
 ```
 
-## 建议的数据工作流
-```text
-data/
-├── raw/         # 从 Tushare 直接下载的原始 CSV
-└── processed/   # 后续清洗、对齐、补字段后的数据
-```
+---
 
-当前阶段你可以先只用 `raw/`。
+## 八、当前限制
+目前 processed 层还是 v1.4 基础版，还没有做：
+- 缺失日期填补策略
+- 分钟级别处理
+- 复权标准化
+- 因子字段加工
+- 异常样本统计
+- 数据准备时间戳追踪
 
-## 当前限制
-- 目前下载脚本使用 Python，不是 Rust 原生
-- 目前只接了 ETF 日线，不包含分钟线
-- 目前校验规则仍然偏基础
-- 目前还没有自动增量更新日志落盘
+---
 
-## 下一步最值得做
-当 v1.1 跑稳后，下一步建议做：
-1. 数据校验结果输出到文件
-2. 增量更新日志输出到 `output/data_updates/`
-3. processed 层（对齐、裁剪、补字段）
-4. Rust 原生数据下载器（如果你后面想完全 Rust 化）
+## 九、下一步最值得做
+当 v1.4 跑稳后，下一步建议做：
+1. 数据准备批次编号与时间戳
+2. processed 层异常报告
+3. Rust 输出中自动记录本次数据批次
+4. 单资产策略也支持 processed-first 模式

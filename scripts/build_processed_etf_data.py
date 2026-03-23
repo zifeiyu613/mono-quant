@@ -6,7 +6,7 @@ Current responsibilities:
 - keep only common aligned dates across all selected assets
 - normalize column order and sort ascending by date
 - write one processed file per asset to data/processed/
-- write an alignment manifest for traceability
+- write alignment and summary artifacts for traceability
 
 Usage:
   python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
@@ -63,6 +63,7 @@ def main() -> int:
         return 1
 
     dfs = {}
+    raw_stats = {}
     for ts_code in symbols:
         name = normalize_symbol(ts_code)
         path = raw_dir / f"{name}.csv"
@@ -81,9 +82,14 @@ def main() -> int:
             return 1
         df = df.sort_values("date").drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
         dfs[name] = df
+        raw_stats[name] = {
+            "raw_rows": len(df),
+            "raw_start_date": df["date"].iloc[0].strftime("%Y-%m-%d"),
+            "raw_end_date": df["date"].iloc[-1].strftime("%Y-%m-%d"),
+        }
 
     common_dates = None
-    for name, df in dfs.items():
+    for _, df in dfs.items():
         s = set(df["date"])
         common_dates = s if common_dates is None else common_dates.intersection(s)
 
@@ -100,6 +106,26 @@ def main() -> int:
         "assets": [],
     }
 
+    summary = {
+        "data_layer": "processed",
+        "asset_count": len(dfs),
+        "aligned_rows": len(common_dates),
+        "aligned_start_date": common_dates[0].strftime("%Y-%m-%d"),
+        "aligned_end_date": common_dates[-1].strftime("%Y-%m-%d"),
+        "assets": [],
+    }
+
+    summary_lines = [
+        "=== Processed Data Summary ===",
+        f"data_layer: processed",
+        f"asset_count: {len(dfs)}",
+        f"aligned_rows: {len(common_dates)}",
+        f"aligned_start_date: {common_dates[0].strftime('%Y-%m-%d')}",
+        f"aligned_end_date: {common_dates[-1].strftime('%Y-%m-%d')}",
+        "",
+        "Per Asset:",
+    ]
+
     for name, df in dfs.items():
         out = df[df["date"].isin(common_dates)].copy()
         out["date"] = out["date"].dt.strftime("%Y-%m-%d")
@@ -107,17 +133,54 @@ def main() -> int:
         out = out[desired_cols]
         out_path = processed_dir / f"{name}.csv"
         out.to_csv(out_path, index=False)
+
+        dropped_rows = raw_stats[name]["raw_rows"] - len(out)
+        asset_summary = {
+            "name": name,
+            "path": str(out_path),
+            "raw_rows": raw_stats[name]["raw_rows"],
+            "processed_rows": len(out),
+            "dropped_rows": dropped_rows,
+            "raw_start_date": raw_stats[name]["raw_start_date"],
+            "raw_end_date": raw_stats[name]["raw_end_date"],
+            "processed_start_date": out["date"].iloc[0],
+            "processed_end_date": out["date"].iloc[-1],
+            "fully_aligned": len(out) == len(common_dates),
+        }
+
         manifest["assets"].append({
             "name": name,
             "path": str(out_path),
             "rows": len(out),
         })
+        summary["assets"].append(asset_summary)
+        summary_lines.extend([
+            f"- {name}",
+            f"  raw_rows: {asset_summary['raw_rows']}",
+            f"  processed_rows: {asset_summary['processed_rows']}",
+            f"  dropped_rows: {asset_summary['dropped_rows']}",
+            f"  raw_range: {asset_summary['raw_start_date']} -> {asset_summary['raw_end_date']}",
+            f"  processed_range: {asset_summary['processed_start_date']} -> {asset_summary['processed_end_date']}",
+            f"  fully_aligned: {asset_summary['fully_aligned']}",
+            f"  path: {asset_summary['path']}",
+        ])
         print(f"[INFO] wrote processed {out_path} rows={len(out)}")
 
     manifest_path = processed_dir / "alignment_manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
     print(f"[INFO] wrote manifest {manifest_path}")
+
+    summary_json_path = processed_dir / "processed_summary.json"
+    with open(summary_json_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+    print(f"[INFO] wrote summary json {summary_json_path}")
+
+    summary_txt_path = processed_dir / "processed_summary.txt"
+    with open(summary_txt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(summary_lines) + "\n")
+    print(f"[INFO] wrote summary txt {summary_txt_path}")
+
     print("[INFO] processed layer build complete")
     return 0
 
