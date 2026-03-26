@@ -103,11 +103,7 @@ fn push_batch_result_row(
         total_cost_paid: result.summary.total_cost_paid,
         final_equity: result.summary.final_equity,
         halted_by_risk: result.summary.halted_by_risk,
-        halt_event_type: result
-            .risk_events
-            .last()
-            .map(|event| event.event_type.clone())
-            .unwrap_or_default(),
+        halt_event_type: last_stop_event_type(&result.risk_events).unwrap_or_default(),
         halt_reason: result
             .summary
             .halt_reason
@@ -122,6 +118,18 @@ fn push_batch_result_row(
 /// 为较长的研究流程打印统一格式的信息日志。
 fn log_info(message: &str) {
     println!("[信息] {}", message);
+}
+
+fn is_stop_event_type(event_type: &str) -> bool {
+    event_type.ends_with("_stop")
+}
+
+fn last_stop_event_type(events: &[report::RiskEventRow]) -> Option<String> {
+    events
+        .iter()
+        .rev()
+        .find(|event| is_stop_event_type(&event.event_type))
+        .map(|event| event.event_type.clone())
 }
 
 fn required_asset_count_for_max_weight(max_weight: f64) -> usize {
@@ -164,6 +172,11 @@ fn validate_risk_config(
                 return Err(anyhow!("risk.max_rebalance_turnover 必须介于 0 和 1 之间"));
             }
         }
+        if let Some(days) = risk_cfg.stop_cooldown_days {
+            if days == 0 {
+                return Err(anyhow!("risk.stop_cooldown_days 必须大于 0"));
+            }
+        }
     }
     Ok(())
 }
@@ -200,6 +213,9 @@ fn render_risk_summary(
         }
         if let Some(limit) = risk_cfg.max_rebalance_turnover {
             lines.push(format!("调仓换手上限: {:.2}%", limit * 100.0));
+        }
+        if let Some(days) = risk_cfg.stop_cooldown_days {
+            lines.push(format!("风控冷静期: {} 个交易日", days));
         }
     } else {
         lines.push("风险控制: 未启用".to_string());
@@ -837,10 +853,7 @@ fn main() -> anyhow::Result<()> {
                                 total_cost_paid: result.summary.total_cost_paid,
                                 final_equity: result.summary.final_equity,
                                 halted_by_risk: result.summary.halted_by_risk,
-                                halt_event_type: result
-                                    .risk_events
-                                    .last()
-                                    .map(|event| event.event_type.clone())
+                                halt_event_type: last_stop_event_type(&result.risk_events)
                                     .unwrap_or_default(),
                                 halt_reason: result
                                     .summary
@@ -1145,11 +1158,27 @@ mod tests {
             max_daily_loss_limit: None,
             max_drawdown_limit: None,
             max_rebalance_turnover: None,
+            stop_cooldown_days: None,
         };
 
         let err = validate_risk_config(Some(&risk), Some(2)).unwrap_err();
         assert!(err
             .to_string()
             .contains("无法满足 risk.max_single_asset_weight"));
+    }
+
+    #[test]
+    fn validate_risk_config_rejects_zero_cooldown_days() {
+        let risk = config::RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: None,
+            max_daily_loss_limit: None,
+            max_drawdown_limit: Some(0.15),
+            max_rebalance_turnover: None,
+            stop_cooldown_days: Some(0),
+        };
+
+        let err = validate_risk_config(Some(&risk), Some(4)).unwrap_err();
+        assert!(err.to_string().contains("risk.stop_cooldown_days"));
     }
 }

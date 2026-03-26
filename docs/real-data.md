@@ -161,6 +161,7 @@ data/processed/
 其中：
 - `risk_summary.txt` 会记录主要停机原因
 - `batch_results.csv` 和 `experiment_index.csv` 会记录 `halt_event_type` 与 `halt_reason`
+- 如果配置了 `stop_cooldown_days`，`risk_events.csv` 还会记录 `cooldown_recovery`
 
 然后会在日志里打印 processed 摘要前几行。
 

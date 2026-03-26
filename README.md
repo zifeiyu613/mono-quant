@@ -20,6 +20,7 @@
 - 支持成本敏感性摘要与假设证据置信度输出
 - 支持最小风控：样本门槛、单资产权重上限、单日亏损停机、最大回撤停机、调仓换手上限
 - `max_single_asset_weight` 现在会校验资产池分散度是否足够，避免静默突破权重上限
+- 支持停机冷静期：触发停机后可空仓一段交易日，再回到后续调仓点
 
 ## 快速开始
 
@@ -138,6 +139,7 @@ python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 更多说明见：
 - `docs/real-data.md`
 - `docs/research-workflow.md`
+- `docs/strategy-live-plan.md`
 
 ## 目录结构
 ```text

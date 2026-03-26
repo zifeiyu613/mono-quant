@@ -94,6 +94,7 @@ pub fn run_momentum_topn_backtest(
 ) -> MomentumTopNResult {
     let dates = intersect_dates(asset_maps);
     let unit_cost = commission + slippage;
+    let cooldown_days = risk.and_then(|cfg| cfg.stop_cooldown_days);
     let mut total_equity = 1.0;
     let mut holdings_value: HashMap<String, f64> = HashMap::new();
     let mut peak_equity = total_equity;
@@ -106,7 +107,9 @@ pub fn run_momentum_topn_backtest(
     let mut total_cost_paid = 0.0;
     let mut trade_count = 0usize;
     let mut halted_by_risk = false;
+    let mut permanently_stopped = false;
     let mut halt_reason = None;
+    let mut cooldown_until_index: Option<usize> = None;
 
     if let Some(max_weight) = risk.and_then(|cfg| cfg.max_single_asset_weight) {
         let required_assets = required_asset_count_for_max_weight(max_weight);
@@ -135,8 +138,22 @@ pub fn run_momentum_topn_backtest(
         let date = dates[i];
         let next_date = dates[i + 1];
         let previous_equity = total_equity;
+        let mut in_cooldown = false;
 
-        if !halted_by_risk && (i - lookback) % rebalance_freq == 0 {
+        if let Some(until_index) = cooldown_until_index {
+            if i < until_index {
+                in_cooldown = true;
+            } else {
+                risk_events.push(RiskEventRow {
+                    date: date.to_string(),
+                    event_type: "cooldown_recovery".to_string(),
+                    detail: "风控冷静期结束，组合恢复为可调仓状态，后续将在下一次调仓点重新入场".to_string(),
+                });
+                cooldown_until_index = None;
+            }
+        }
+
+        if !permanently_stopped && !in_cooldown && (i - lookback) % rebalance_freq == 0 {
             let ranking = rank_assets_by_lookback(asset_maps, &dates, i, lookback);
             let selected_count = effective_selected_count(top_n, ranking.len(), risk);
             let selected: Vec<String> = ranking
@@ -246,15 +263,22 @@ pub fn run_momentum_topn_backtest(
         } else {
             0.0
         };
-        if !halted_by_risk {
+        if !permanently_stopped && !in_cooldown && !holdings_value.is_empty() {
             if let Some(limit) = risk.and_then(|cfg| cfg.max_daily_loss_limit) {
                 if daily_return <= -limit {
                     halted_by_risk = true;
-                    let reason = format!(
-                        "单日组合收益 {:.2}% 触发单日亏损上限 {:.2}%，组合已切换为空仓",
+                    let mut reason = format!(
+                        "单日组合收益 {:.2}% 触发单日亏损上限 {:.2}%",
                         daily_return * 100.0,
                         limit * 100.0
                     );
+                    if let Some(days) = cooldown_days {
+                        reason.push_str(&format!("，组合已切换为空仓并进入 {} 个交易日冷静期", days));
+                        cooldown_until_index = Some(i + days + 1);
+                    } else {
+                        reason.push_str("，组合已切换为空仓");
+                        permanently_stopped = true;
+                    }
                     halt_reason = Some(reason.clone());
                     risk_events.push(RiskEventRow {
                         date: next_date.to_string(),
@@ -273,15 +297,22 @@ pub fn run_momentum_topn_backtest(
         } else {
             0.0
         };
-        if !halted_by_risk {
+        if !permanently_stopped && !in_cooldown && !holdings_value.is_empty() {
             if let Some(limit) = risk.and_then(|cfg| cfg.max_drawdown_limit) {
                 if current_drawdown <= -limit {
                     halted_by_risk = true;
-                    let reason = format!(
-                        "当前回撤 {:.2}% 触发最大回撤上限 {:.2}%，组合已切换为空仓",
+                    let mut reason = format!(
+                        "当前回撤 {:.2}% 触发最大回撤上限 {:.2}%",
                         current_drawdown * 100.0,
                         limit * 100.0
                     );
+                    if let Some(days) = cooldown_days {
+                        reason.push_str(&format!("，组合已切换为空仓并进入 {} 个交易日冷静期", days));
+                        cooldown_until_index = Some(i + days + 1);
+                    } else {
+                        reason.push_str("，组合已切换为空仓");
+                        permanently_stopped = true;
+                    }
                     halt_reason = Some(reason.clone());
                     risk_events.push(RiskEventRow {
                         date: next_date.to_string(),
@@ -432,6 +463,39 @@ mod tests {
         maps
     }
 
+    fn sample_cooldown_asset_maps() -> HashMap<String, HashMap<NaiveDate, Bar>> {
+        let mut maps = HashMap::new();
+        let asset_a = vec![
+            bar("2024-01-01", 100.0),
+            bar("2024-01-02", 110.0),
+            bar("2024-01-03", 90.0),
+            bar("2024-01-04", 92.0),
+            bar("2024-01-05", 94.0),
+            bar("2024-01-08", 120.0),
+            bar("2024-01-09", 121.0),
+            bar("2024-01-10", 122.0),
+        ];
+        let asset_b = vec![
+            bar("2024-01-01", 100.0),
+            bar("2024-01-02", 101.0),
+            bar("2024-01-03", 102.0),
+            bar("2024-01-04", 103.0),
+            bar("2024-01-05", 104.0),
+            bar("2024-01-08", 105.0),
+            bar("2024-01-09", 106.0),
+            bar("2024-01-10", 107.0),
+        ];
+        maps.insert(
+            "a".to_string(),
+            asset_a.into_iter().map(|item| (item.date, item)).collect(),
+        );
+        maps.insert(
+            "b".to_string(),
+            asset_b.into_iter().map(|item| (item.date, item)).collect(),
+        );
+        maps
+    }
+
     #[test]
     fn drawdown_guard_halts_strategy() {
         let risk = RiskConfig {
@@ -440,6 +504,7 @@ mod tests {
             max_daily_loss_limit: None,
             max_drawdown_limit: Some(0.05),
             max_rebalance_turnover: None,
+            stop_cooldown_days: None,
         };
 
         let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
@@ -459,6 +524,7 @@ mod tests {
             max_daily_loss_limit: None,
             max_drawdown_limit: None,
             max_rebalance_turnover: Some(0.0),
+            stop_cooldown_days: None,
         };
 
         let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
@@ -481,6 +547,7 @@ mod tests {
             max_daily_loss_limit: None,
             max_drawdown_limit: None,
             max_rebalance_turnover: None,
+            stop_cooldown_days: None,
         };
 
         let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
@@ -499,6 +566,7 @@ mod tests {
             max_daily_loss_limit: Some(0.1),
             max_drawdown_limit: None,
             max_rebalance_turnover: None,
+            stop_cooldown_days: None,
         };
 
         let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
@@ -518,6 +586,7 @@ mod tests {
             max_daily_loss_limit: None,
             max_drawdown_limit: None,
             max_rebalance_turnover: None,
+            stop_cooldown_days: None,
         };
 
         let result =
@@ -528,5 +597,38 @@ mod tests {
             .risk_events
             .iter()
             .any(|event| event.event_type == "asset_universe_stop"));
+    }
+
+    #[test]
+    fn cooldown_recovery_allows_reentry_after_stop() {
+        let risk = RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: None,
+            max_daily_loss_limit: Some(0.1),
+            max_drawdown_limit: None,
+            max_rebalance_turnover: None,
+            stop_cooldown_days: Some(2),
+        };
+
+        let result = run_momentum_topn_backtest(
+            &sample_cooldown_asset_maps(),
+            1,
+            1,
+            1,
+            0.0,
+            0.0,
+            Some(&risk),
+        );
+
+        assert!(result.summary.halted_by_risk);
+        assert!(result
+            .risk_events
+            .iter()
+            .any(|event| event.event_type == "daily_loss_stop"));
+        assert!(result
+            .risk_events
+            .iter()
+            .any(|event| event.event_type == "cooldown_recovery"));
+        assert!(result.rebalances.len() >= 2);
     }
 }

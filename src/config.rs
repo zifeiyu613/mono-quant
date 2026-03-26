@@ -58,6 +58,7 @@ pub struct RiskConfig {
     pub max_daily_loss_limit: Option<f64>,
     pub max_drawdown_limit: Option<f64>,
     pub max_rebalance_turnover: Option<f64>,
+    pub stop_cooldown_days: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
