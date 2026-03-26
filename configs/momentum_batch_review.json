@@ -1,5 +1,5 @@
 {
-  "experiment_name": "momentum_batch_v5_processed",
+  "experiment_name": "momentum_batch_v5_reviewed",
   "strategy": "momentum_batch",
   "asset_files": {
     "hs300": "data/processed/hs300.csv",
@@ -13,11 +13,18 @@
   "unit_costs": [0.0002, 0.0004],
   "research": {
     "topic": "A股风格 ETF 动量轮动参数收敛",
-    "round": "round_1",
-    "objective": "验证 lookback、Top N 和调仓频率对收益、回撤与成本的影响方向",
+    "round": "round_1_review",
+    "objective": "在自动评估基础上加入人工研究判断，形成更正式的最终决策记录",
     "sample_split": {
       "mode": "ratio",
       "in_sample_ratio": 0.7
+    },
+    "decision_override": {
+      "final_state": "testing",
+      "recommended_action": "保留 H1 和 H3，优先增加样本外验证与更长时间窗复核",
+      "reason": "当前样本外长度仍偏短，先不把自动 validated/refining 直接当成最终研究结论。",
+      "owner": "will",
+      "decided_at": "2026-03-26"
     },
     "hypotheses": [
       {
@@ -43,5 +50,5 @@
       }
     ]
   },
-  "output_dir": "output/momentum_batch_v5_processed"
+  "output_dir": "output/momentum_batch_v5_reviewed"
 }

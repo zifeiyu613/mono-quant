@@ -46,6 +46,29 @@ cargo run -- --config configs/momentum_topn.json
 cargo run -- --config configs/momentum_batch.json
 ```
 
+### 5. 批量研究治理输出
+`momentum_batch` 现在支持可选的研究治理配置，会在批量实验完成后额外输出：
+- `hypothesis_assessment.csv`
+- `hypothesis_assessment_in_sample.csv`
+- `hypothesis_assessment_out_of_sample.csv`
+- `research_plan.txt`
+- `research_decision_auto.txt`
+- `research_decision.txt`
+- `governance_summary.txt`
+- 更新后的 `stage_report.txt`
+
+适合用来记录：
+- 当前研究主题
+- 本轮研究假设
+- 样本内 / 样本外假设支持度评估
+- 自动研究状态与人工最终决策
+- 当前研究状态与下一步建议
+
+如需验证人工覆写决策示例，可运行：
+```bash
+cargo run -- --config configs/momentum_batch_review.json
+```
+
 ## 真实数据工作流
 安装依赖（推荐在本地 `.venv` 中执行）：
 ```bash
@@ -94,6 +117,7 @@ python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 
 更多说明见：
 - `docs/real-data.md`
+- `docs/research-workflow.md`
 
 ## 目录结构
 ```text

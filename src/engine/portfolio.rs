@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-/// Compute turnover amount between current holdings and target holdings in value terms.
+/// 按持仓市值计算当前持仓与目标持仓之间的换手金额。
 pub fn compute_turnover_amount(
     current_values: &HashMap<String, f64>,
     target_values: &HashMap<String, f64>,

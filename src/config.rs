@@ -4,6 +4,44 @@ use std::collections::HashMap;
 use std::fs;
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct SampleSplitConfig {
+    pub mode: String,
+    pub split_date: Option<String>,
+    pub in_sample_ratio: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct DecisionOverrideConfig {
+    pub final_state: String,
+    pub recommended_action: Option<String>,
+    pub reason: String,
+    pub owner: Option<String>,
+    pub decided_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ResearchConfig {
+    pub topic: String,
+    pub round: String,
+    pub objective: Option<String>,
+    pub sample_split: Option<SampleSplitConfig>,
+    pub decision_override: Option<DecisionOverrideConfig>,
+    #[serde(default)]
+    pub hypotheses: Vec<HypothesisConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct HypothesisConfig {
+    pub id: String,
+    pub statement: String,
+    pub rule: String,
+    pub preferred_max_lookback: Option<usize>,
+    pub preferred_min_top_n: Option<usize>,
+    pub preferred_min_rebalance_freq: Option<usize>,
+    pub min_return_delta: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub experiment_name: String,
     #[serde(default = "default_strategy")]
@@ -22,6 +60,7 @@ pub struct AppConfig {
     pub commission: Option<f64>,
     pub slippage: Option<f64>,
     pub stamp_tax_sell: Option<f64>,
+    pub research: Option<ResearchConfig>,
     pub output_dir: String,
 }
 
@@ -29,11 +68,11 @@ fn default_strategy() -> String {
     "ma_single".to_string()
 }
 
-/// Load and parse the JSON config file into a strongly typed AppConfig.
+/// 读取并解析 JSON 配置文件，返回强类型的 `AppConfig`。
 pub fn load_config(path: &str) -> anyhow::Result<AppConfig> {
     let content = fs::read_to_string(path)
-        .with_context(|| format!("failed to read config file: {}", path))?;
+        .with_context(|| format!("读取配置文件失败：{}", path))?;
     let cfg: AppConfig = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse json config: {}", path))?;
+        .with_context(|| format!("解析 JSON 配置失败：{}", path))?;
     Ok(cfg)
 }

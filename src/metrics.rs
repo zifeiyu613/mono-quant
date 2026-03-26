@@ -1,4 +1,4 @@
-/// Compute the maximum drawdown from an equity curve.
+/// 根据净值曲线计算最大回撤。
 pub fn max_drawdown(equity_curve: &[f64]) -> f64 {
     if equity_curve.is_empty() {
         return 0.0;

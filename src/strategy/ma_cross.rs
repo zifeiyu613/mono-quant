@@ -1,6 +1,6 @@
 use crate::data::Bar;
 
-/// Compute a simple moving average series. Values before the window are None.
+/// 计算简单移动平均线序列，窗口前的值返回 `None`。
 pub fn moving_average(values: &[f64], window: usize) -> Vec<Option<f64>> {
     let mut result = vec![None; values.len()];
     if window == 0 || values.len() < window {
@@ -19,7 +19,7 @@ pub fn moving_average(values: &[f64], window: usize) -> Vec<Option<f64>> {
     result
 }
 
-/// Generate MA cross signals: 1 for buy, -1 for sell, 0 otherwise.
+/// 生成均线交叉信号：1 表示买入，-1 表示卖出，0 表示无信号。
 pub fn generate_signals(bars: &[Bar], fast: usize, slow: usize) -> Vec<i8> {
     let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
     let fast_ma = moving_average(&closes, fast);

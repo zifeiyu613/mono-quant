@@ -2,7 +2,7 @@ use crate::data::Bar;
 use chrono::NaiveDate;
 use std::collections::HashMap;
 
-/// Rank assets by lookback return on a given aligned date index.
+/// 在给定对齐日期索引上，按回看收益率对资产进行排名。
 pub fn rank_assets_by_lookback(
     asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
     dates: &[NaiveDate],

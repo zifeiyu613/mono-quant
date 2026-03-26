@@ -53,16 +53,36 @@ pub struct ExperimentIndexRow {
     pub output_dir: String,
 }
 
-/// Ensure the output directory exists before writing any result artifacts.
+#[derive(Debug, Serialize)]
+pub struct HypothesisAssessmentRow {
+    pub hypothesis_id: String,
+    pub statement: String,
+    pub rule: String,
+    pub preferred_group: String,
+    pub baseline_group: String,
+    pub preferred_count: usize,
+    pub baseline_count: usize,
+    pub preferred_avg_return: f64,
+    pub baseline_avg_return: f64,
+    pub preferred_avg_drawdown: f64,
+    pub baseline_avg_drawdown: f64,
+    pub preferred_avg_cost: f64,
+    pub baseline_avg_cost: f64,
+    pub score: i32,
+    pub support_level: String,
+    pub rationale: String,
+}
+
+/// 在写入结果文件前，确保输出目录存在。
 pub fn ensure_output_dir(path: &str) -> anyhow::Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("failed to create output dir: {}", path))?;
+    fs::create_dir_all(path).with_context(|| format!("创建输出目录失败：{}", path))?;
     Ok(())
 }
 
-/// Write the portfolio equity curve to a CSV file.
+/// 将组合净值曲线写入 CSV 文件。
 pub fn write_equity_curve(path: &str, rows: &[EquityRow]) -> anyhow::Result<()> {
     let mut wtr = csv::Writer::from_path(path)
-        .with_context(|| format!("failed to create equity csv: {}", path))?;
+        .with_context(|| format!("创建净值曲线 CSV 失败：{}", path))?;
     for row in rows {
         wtr.serialize(row)?;
     }
@@ -70,10 +90,10 @@ pub fn write_equity_curve(path: &str, rows: &[EquityRow]) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Write rebalance events and cost information to a CSV file.
+/// 将调仓事件和成本信息写入 CSV 文件。
 pub fn write_rebalance_log(path: &str, rows: &[RebalanceRow]) -> anyhow::Result<()> {
     let mut wtr = csv::Writer::from_path(path)
-        .with_context(|| format!("failed to create rebalance csv: {}", path))?;
+        .with_context(|| format!("创建调仓日志 CSV 失败：{}", path))?;
     for row in rows {
         wtr.serialize(row)?;
     }
@@ -81,10 +101,10 @@ pub fn write_rebalance_log(path: &str, rows: &[RebalanceRow]) -> anyhow::Result<
     Ok(())
 }
 
-/// Write daily holdings value and weight snapshots to a CSV file.
+/// 将每日持仓市值和权重快照写入 CSV 文件。
 pub fn write_holdings_trace(path: &str, rows: &[HoldingTraceRow]) -> anyhow::Result<()> {
     let mut wtr = csv::Writer::from_path(path)
-        .with_context(|| format!("failed to create holdings trace csv: {}", path))?;
+        .with_context(|| format!("创建持仓轨迹 CSV 失败：{}", path))?;
     for row in rows {
         wtr.serialize(row)?;
     }
@@ -92,10 +112,10 @@ pub fn write_holdings_trace(path: &str, rows: &[HoldingTraceRow]) -> anyhow::Res
     Ok(())
 }
 
-/// Write per-asset daily and cumulative contribution records to a CSV file.
+/// 将逐资产的每日归因和累计归因写入 CSV 文件。
 pub fn write_contributions(path: &str, rows: &[ContributionRow]) -> anyhow::Result<()> {
     let mut wtr = csv::Writer::from_path(path)
-        .with_context(|| format!("failed to create contribution csv: {}", path))?;
+        .with_context(|| format!("创建收益归因 CSV 失败：{}", path))?;
     for row in rows {
         wtr.serialize(row)?;
     }
@@ -103,10 +123,10 @@ pub fn write_contributions(path: &str, rows: &[ContributionRow]) -> anyhow::Resu
     Ok(())
 }
 
-/// Write experiment index rows so batch outputs can be navigated later.
+/// 将实验索引写入 CSV，便于后续定位批量实验输出。
 pub fn write_experiment_index(path: &str, rows: &[ExperimentIndexRow]) -> anyhow::Result<()> {
     let mut wtr = csv::Writer::from_path(path)
-        .with_context(|| format!("failed to create experiment index csv: {}", path))?;
+        .with_context(|| format!("创建实验索引 CSV 失败：{}", path))?;
     for row in rows {
         wtr.serialize(row)?;
     }
@@ -114,9 +134,23 @@ pub fn write_experiment_index(path: &str, rows: &[ExperimentIndexRow]) -> anyhow
     Ok(())
 }
 
-/// Write a plain-text diagnostics or summary file.
+/// 将研究治理中的假设评估结果写入 CSV 文件。
+pub fn write_hypothesis_assessments(
+    path: &str,
+    rows: &[HypothesisAssessmentRow],
+) -> anyhow::Result<()> {
+    let mut wtr = csv::Writer::from_path(path)
+        .with_context(|| format!("创建假设评估 CSV 失败：{}", path))?;
+    for row in rows {
+        wtr.serialize(row)?;
+    }
+    wtr.flush()?;
+    Ok(())
+}
+
+/// 将纯文本诊断或摘要内容写入文件。
 pub fn write_diagnostics(path: &str, content: &str) -> anyhow::Result<()> {
-    let mut f = File::create(path).with_context(|| format!("failed to create diagnostics: {}", path))?;
+    let mut f = File::create(path).with_context(|| format!("创建诊断文件失败：{}", path))?;
     f.write_all(content.as_bytes())?;
     Ok(())
 }

@@ -26,7 +26,7 @@ pub struct MomentumTopNResult {
     pub worst_contributor: Option<(String, f64)>,
 }
 
-/// Run a single-asset MA crossover backtest using close-to-close returns and simple trading costs.
+/// 运行单资产均线交叉回测，使用收盘到收盘收益和简化交易成本模型。
 pub fn run_ma_backtest(
     bars: &[Bar],
     signals: &[i8],
@@ -76,7 +76,7 @@ pub fn run_ma_backtest(
     (summary, curve)
 }
 
-/// Run a multi-asset Top N momentum rotation backtest and return equity, holdings, contribution, and rebalance diagnostics.
+/// 运行多资产 Top N 动量轮动回测，并返回净值、持仓、归因和调仓诊断结果。
 pub fn run_momentum_topn_backtest(
     asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
     lookback: usize,

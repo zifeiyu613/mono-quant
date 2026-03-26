@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Build processed ETF datasets from raw CSV files.
+"""根据 raw CSV 构建 processed ETF 数据集。
 
-Current responsibilities:
-- read multiple raw ETF CSV files
-- keep only common aligned dates across all selected assets
-- normalize column order and sort ascending by date
-- write one processed file per asset to data/processed/
-- write alignment and summary artifacts for traceability
+当前职责：
+- 读取多个 raw ETF CSV 文件
+- 仅保留所有资产的共同对齐交易日
+- 统一字段顺序并按日期升序输出
+- 为每个资产生成一份 data/processed/ 下的 CSV
+- 生成对齐清单与摘要文件，便于追溯
 
-Usage:
+用法：
   python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 """
 
@@ -20,10 +20,10 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Build processed ETF data layer")
-    p.add_argument("--config", default="scripts/fetch_config.json", help="Fetch config JSON path")
-    p.add_argument("--raw-dir", default="data/raw", help="Raw data directory")
-    p.add_argument("--processed-dir", default="data/processed", help="Processed data directory")
+    p = argparse.ArgumentParser(description="构建 processed ETF 数据层")
+    p.add_argument("--config", default="scripts/fetch_config.json", help="拉取配置 JSON 路径")
+    p.add_argument("--raw-dir", default="data/raw", help="raw 数据目录")
+    p.add_argument("--processed-dir", default="data/processed", help="processed 数据目录")
     return p.parse_args()
 
 
@@ -49,8 +49,8 @@ def main() -> int:
     try:
         import pandas as pd
     except Exception as e:
-        print("[ERROR] Missing pandas. Run: pip install -r scripts/requirements.txt")
-        print(f"[DETAIL] {e}")
+        print("[错误] 缺少 pandas，请先运行：pip install -r scripts/requirements.txt")
+        print(f"[详情] {e}")
         return 1
 
     raw_dir = Path(args.raw_dir)
@@ -59,7 +59,7 @@ def main() -> int:
 
     symbols = cfg.get("symbols", [])
     if not symbols:
-        print("[ERROR] config must include symbols")
+        print("[错误] 配置文件必须包含 symbols")
         return 1
 
     dfs = {}
@@ -68,17 +68,17 @@ def main() -> int:
         name = normalize_symbol(ts_code)
         path = raw_dir / f"{name}.csv"
         if not path.exists():
-            print(f"[ERROR] missing raw csv: {path}")
+            print(f"[错误] 缺少 raw CSV：{path}")
             return 1
         df = pd.read_csv(path)
         required = ["date", "open", "close"]
         missing = [c for c in required if c not in df.columns]
         if missing:
-            print(f"[ERROR] {path} missing columns: {missing}")
+            print(f"[错误] {path} 缺少字段：{missing}")
             return 1
         df["date"] = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
         if df["date"].isnull().any():
-            print(f"[ERROR] {path} has invalid date rows")
+            print(f"[错误] {path} 存在非法日期记录")
             return 1
         df = df.sort_values("date").drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
         dfs[name] = df
@@ -95,7 +95,7 @@ def main() -> int:
 
     common_dates = sorted(common_dates)
     if not common_dates:
-        print("[ERROR] no common dates across selected assets")
+        print("[错误] 所选资产之间没有共同交易日")
         return 1
 
     manifest = {
@@ -116,14 +116,14 @@ def main() -> int:
     }
 
     summary_lines = [
-        "=== Processed Data Summary ===",
-        f"data_layer: processed",
-        f"asset_count: {len(dfs)}",
-        f"aligned_rows: {len(common_dates)}",
-        f"aligned_start_date: {common_dates[0].strftime('%Y-%m-%d')}",
-        f"aligned_end_date: {common_dates[-1].strftime('%Y-%m-%d')}",
+        "=== Processed 数据摘要 ===",
+        f"数据层: processed",
+        f"资产数量: {len(dfs)}",
+        f"对齐行数: {len(common_dates)}",
+        f"对齐开始日期: {common_dates[0].strftime('%Y-%m-%d')}",
+        f"对齐结束日期: {common_dates[-1].strftime('%Y-%m-%d')}",
         "",
-        "Per Asset:",
+        "分资产摘要：",
     ]
 
     for name, df in dfs.items():
@@ -156,32 +156,32 @@ def main() -> int:
         summary["assets"].append(asset_summary)
         summary_lines.extend([
             f"- {name}",
-            f"  raw_rows: {asset_summary['raw_rows']}",
-            f"  processed_rows: {asset_summary['processed_rows']}",
-            f"  dropped_rows: {asset_summary['dropped_rows']}",
-            f"  raw_range: {asset_summary['raw_start_date']} -> {asset_summary['raw_end_date']}",
-            f"  processed_range: {asset_summary['processed_start_date']} -> {asset_summary['processed_end_date']}",
-            f"  fully_aligned: {asset_summary['fully_aligned']}",
-            f"  path: {asset_summary['path']}",
+            f"  raw 行数: {asset_summary['raw_rows']}",
+            f"  processed 行数: {asset_summary['processed_rows']}",
+            f"  丢弃行数: {asset_summary['dropped_rows']}",
+            f"  raw 区间: {asset_summary['raw_start_date']} -> {asset_summary['raw_end_date']}",
+            f"  processed 区间: {asset_summary['processed_start_date']} -> {asset_summary['processed_end_date']}",
+            f"  是否完全对齐: {asset_summary['fully_aligned']}",
+            f"  文件路径: {asset_summary['path']}",
         ])
-        print(f"[INFO] wrote processed {out_path} rows={len(out)}")
+        print(f"[信息] 已写入 processed 文件 {out_path} rows={len(out)}")
 
     manifest_path = processed_dir / "alignment_manifest.json"
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
-    print(f"[INFO] wrote manifest {manifest_path}")
+    print(f"[信息] 已写入对齐清单 {manifest_path}")
 
     summary_json_path = processed_dir / "processed_summary.json"
     with open(summary_json_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
-    print(f"[INFO] wrote summary json {summary_json_path}")
+    print(f"[信息] 已写入摘要 JSON {summary_json_path}")
 
     summary_txt_path = processed_dir / "processed_summary.txt"
     with open(summary_txt_path, "w", encoding="utf-8") as f:
         f.write("\n".join(summary_lines) + "\n")
-    print(f"[INFO] wrote summary txt {summary_txt_path}")
+    print(f"[信息] 已写入摘要 TXT {summary_txt_path}")
 
-    print("[INFO] processed layer build complete")
+    print("[信息] processed 数据层构建完成")
     return 0
 
 

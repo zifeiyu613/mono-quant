@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Download or incrementally update A-share ETF daily bars from Tushare.
+"""从 Tushare 下载或增量更新 A 股 ETF 日线数据。
 
-Usage:
+用法：
   export TUSHARE_TOKEN=your_token
   python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json
   python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json --full
 
-Behavior:
-- Default mode: incremental update if local CSV exists
-- --full: force full refresh from config start_date
+行为说明：
+- 默认模式：如果本地 CSV 已存在，则执行增量更新
+- --full：从配置中的 start_date 开始强制全量刷新
 """
 
 from __future__ import annotations
@@ -22,10 +22,10 @@ from typing import Optional
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Fetch ETF daily bars from Tushare")
-    parser.add_argument("--config", default="scripts/fetch_config.json", help="Path to fetch config JSON")
-    parser.add_argument("--token", default=None, help="Tushare token; if omitted uses TUSHARE_TOKEN env var")
-    parser.add_argument("--full", action="store_true", help="Force full refresh instead of incremental update")
+    parser = argparse.ArgumentParser(description="从 Tushare 拉取 ETF 日线数据")
+    parser.add_argument("--config", default="scripts/fetch_config.json", help="拉取配置 JSON 路径")
+    parser.add_argument("--token", default=None, help="Tushare token；如果不传则读取 TUSHARE_TOKEN 环境变量")
+    parser.add_argument("--full", action="store_true", help="强制执行全量刷新，而不是增量更新")
     return parser.parse_args()
 
 
@@ -45,9 +45,9 @@ def normalize_symbol(ts_code: str) -> str:
 
 
 def infer_incremental_start(csv_path: Path) -> Optional[str]:
-    """Infer next start date from existing local CSV.
+    """根据已有本地 CSV 推导下一次拉取的开始日期。
 
-    Returns YYYYMMDD or None if file does not exist / is unusable.
+    如果文件不存在或内容不可用，则返回 None；否则返回 YYYYMMDD。
     """
     if not csv_path.exists():
         return None
@@ -67,7 +67,7 @@ def infer_incremental_start(csv_path: Path) -> Optional[str]:
 
 
 def merge_with_existing(out_path: Path, new_df) -> int:
-    """Merge newly fetched rows with existing CSV and deduplicate by date."""
+    """将新拉取的数据与已有 CSV 合并，并按日期去重。"""
     import pandas as pd
 
     if out_path.exists():
@@ -88,15 +88,15 @@ def main() -> int:
 
     token = args.token or os.getenv("TUSHARE_TOKEN")
     if not token:
-        print("[ERROR] Missing Tushare token. Set TUSHARE_TOKEN or pass --token.", file=sys.stderr)
+        print("[错误] 缺少 Tushare token，请设置 TUSHARE_TOKEN 或通过 --token 传入。", file=sys.stderr)
         return 1
 
     try:
         import tushare as ts
         import pandas as pd
     except Exception as e:
-        print("[ERROR] Missing Python dependencies. Run: pip install -r scripts/requirements.txt", file=sys.stderr)
-        print(f"[DETAIL] {e}", file=sys.stderr)
+        print("[错误] 缺少 Python 依赖，请先运行：pip install -r scripts/requirements.txt", file=sys.stderr)
+        print(f"[详情] {e}", file=sys.stderr)
         return 1
 
     output_dir = Path(cfg.get("output_dir", "data/raw"))
@@ -107,10 +107,10 @@ def main() -> int:
     end_date = cfg.get("end_date")
 
     if not symbols or not start_date_cfg:
-        print("[ERROR] config must include symbols and start_date", file=sys.stderr)
+        print("[错误] 配置文件必须包含 symbols 和 start_date", file=sys.stderr)
         return 1
 
-    print(f"[INFO] provider=tushare symbols={len(symbols)} default_start={start_date_cfg} end_date={end_date} full={args.full}")
+    print(f"[信息] 数据源=tushare symbols={len(symbols)} 默认开始日期={start_date_cfg} 结束日期={end_date} 全量模式={args.full}")
     pro = ts.pro_api(token)
 
     for ts_code in symbols:
@@ -123,7 +123,7 @@ def main() -> int:
             if inferred:
                 start_date = inferred
 
-        print(f"[INFO] fetching {ts_code} -> {out_path.name} start={start_date} end={end_date}")
+        print(f"[信息] 正在拉取 {ts_code} -> {out_path.name} start={start_date} end={end_date}")
         df = pro.fund_daily(
             ts_code=ts_code,
             start_date=start_date,
@@ -132,7 +132,7 @@ def main() -> int:
         )
 
         if df is None or df.empty:
-            print(f"[INFO] no new rows for {ts_code}")
+            print(f"[信息] {ts_code} 没有新增数据")
             continue
 
         df = df.rename(columns={"trade_date": "date"}).copy()
@@ -140,9 +140,9 @@ def main() -> int:
         df = df.sort_values("date").reset_index(drop=True)
 
         final_rows = merge_with_existing(out_path, df)
-        print(f"[INFO] wrote {out_path} total_rows={final_rows} fetched_rows={len(df)}")
+        print(f"[信息] 已写入 {out_path} total_rows={final_rows} fetched_rows={len(df)}")
 
-    print("[INFO] fetch complete")
+    print("[信息] 数据拉取完成")
     return 0
 
 
