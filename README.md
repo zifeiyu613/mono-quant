@@ -18,7 +18,8 @@
 - 多资产回测默认优先读取 `data/processed/`
 - 支持 walk-forward 多窗口样本外评估
 - 支持成本敏感性摘要与假设证据置信度输出
-- 支持最小风控：样本门槛、单资产权重上限、最大回撤停机、调仓换手上限
+- 支持最小风控：样本门槛、单资产权重上限、单日亏损停机、最大回撤停机、调仓换手上限
+- `max_single_asset_weight` 现在会校验资产池分散度是否足够，避免静默突破权重上限
 
 ## 快速开始
 
@@ -68,6 +69,8 @@ cargo run -- --config configs/momentum_batch.json
 - `governance_summary.txt`
 - 更新后的 `stage_report.txt`
 - `risk_events.csv`（触发风控时）
+- `risk_summary.txt`
+- `batch_results.csv` / `experiment_index.csv` 中的 `halt_event_type` / `halt_reason`
 
 适合用来记录：
 - 当前研究主题

@@ -39,6 +39,9 @@ struct BatchResultRow {
     trade_count: usize,
     total_cost_paid: f64,
     final_equity: f64,
+    halted_by_risk: bool,
+    halt_event_type: String,
+    halt_reason: String,
     top_contributor: String,
     worst_contributor: String,
     output_dir: String,
@@ -99,6 +102,17 @@ fn push_batch_result_row(
         trade_count: result.summary.trade_count,
         total_cost_paid: result.summary.total_cost_paid,
         final_equity: result.summary.final_equity,
+        halted_by_risk: result.summary.halted_by_risk,
+        halt_event_type: result
+            .risk_events
+            .last()
+            .map(|event| event.event_type.clone())
+            .unwrap_or_default(),
+        halt_reason: result
+            .summary
+            .halt_reason
+            .clone()
+            .unwrap_or_default(),
         top_contributor,
         worst_contributor,
         output_dir: exp_dir.to_string(),
@@ -110,11 +124,34 @@ fn log_info(message: &str) {
     println!("[信息] {}", message);
 }
 
-fn validate_risk_config(risk: Option<&config::RiskConfig>) -> anyhow::Result<()> {
+fn required_asset_count_for_max_weight(max_weight: f64) -> usize {
+    engine::backtest::required_asset_count_for_max_weight(max_weight)
+}
+
+fn validate_risk_config(
+    risk: Option<&config::RiskConfig>,
+    asset_count: Option<usize>,
+) -> anyhow::Result<()> {
     if let Some(risk_cfg) = risk {
         if let Some(limit) = risk_cfg.max_single_asset_weight {
             if !(0.0..=1.0).contains(&limit) || limit == 0.0 {
                 return Err(anyhow!("risk.max_single_asset_weight 必须介于 0 和 1 之间"));
+            }
+            if let Some(asset_count) = asset_count {
+                let required_assets = required_asset_count_for_max_weight(limit);
+                if asset_count < required_assets {
+                    return Err(anyhow!(
+                        "当前资产池只有 {} 个资产，无法满足 risk.max_single_asset_weight={:.2}% 所要求的至少 {} 个资产",
+                        asset_count,
+                        limit * 100.0,
+                        required_assets
+                    ));
+                }
+            }
+        }
+        if let Some(limit) = risk_cfg.max_daily_loss_limit {
+            if !(0.0..=1.0).contains(&limit) || limit == 0.0 {
+                return Err(anyhow!("risk.max_daily_loss_limit 必须介于 0 和 1 之间"));
             }
         }
         if let Some(limit) = risk_cfg.max_drawdown_limit {
@@ -129,6 +166,70 @@ fn validate_risk_config(risk: Option<&config::RiskConfig>) -> anyhow::Result<()>
         }
     }
     Ok(())
+}
+
+fn render_risk_summary(
+    risk: Option<&config::RiskConfig>,
+    aligned_days: usize,
+    halted_count: usize,
+    total_runs: usize,
+    halt_reason_lines: &[String],
+) -> String {
+    let mut lines = vec![
+        "=== 风控摘要 ===".to_string(),
+        format!("对齐交易日数量: {}", aligned_days),
+        format!("触发风控次数: {} / {}", halted_count, total_runs),
+    ];
+
+    if let Some(risk_cfg) = risk {
+        if let Some(limit) = risk_cfg.min_aligned_days {
+            lines.push(format!("最小样本门槛: {}", limit));
+        }
+        if let Some(limit) = risk_cfg.max_single_asset_weight {
+            lines.push(format!("单资产权重上限: {:.2}%", limit * 100.0));
+            lines.push(format!(
+                "满足该权重上限所需最少资产数: {}",
+                required_asset_count_for_max_weight(limit)
+            ));
+        }
+        if let Some(limit) = risk_cfg.max_daily_loss_limit {
+            lines.push(format!("单日亏损上限: {:.2}%", limit * 100.0));
+        }
+        if let Some(limit) = risk_cfg.max_drawdown_limit {
+            lines.push(format!("最大回撤上限: {:.2}%", limit * 100.0));
+        }
+        if let Some(limit) = risk_cfg.max_rebalance_turnover {
+            lines.push(format!("调仓换手上限: {:.2}%", limit * 100.0));
+        }
+    } else {
+        lines.push("风险控制: 未启用".to_string());
+    }
+
+    if !halt_reason_lines.is_empty() {
+        lines.push("主要停机原因:".to_string());
+        for line in halt_reason_lines {
+            lines.push(format!("- {}", line));
+        }
+    }
+
+    lines.join("\n") + "\n"
+}
+
+fn summarize_halt_reasons(rows: &[BatchResultRow]) -> Vec<String> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for row in rows {
+        if row.halted_by_risk && !row.halt_reason.is_empty() {
+            *counts.entry(row.halt_reason.clone()).or_insert(0) += 1;
+        }
+    }
+
+    let mut pairs: Vec<(String, usize)> = counts.into_iter().collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    pairs
+        .into_iter()
+        .take(3)
+        .map(|(reason, count)| format!("{} 次 - {}", count, reason))
+        .collect()
 }
 
 /// 解析 `--config` 命令行参数，并返回 JSON 配置路径。
@@ -319,11 +420,11 @@ fn main() -> anyhow::Result<()> {
         }
         "momentum_topn" => {
             ensure_output_dir(&cfg.output_dir)?;
-            validate_risk_config(cfg.risk.as_ref())?;
             let asset_files = cfg
                 .asset_files
                 .clone()
                 .ok_or_else(|| anyhow!("momentum_topn 需要提供 asset_files"))?;
+            validate_risk_config(cfg.risk.as_ref(), Some(asset_files.len()))?;
             let lookback = cfg
                 .lookback
                 .ok_or_else(|| anyhow!("momentum_topn 需要提供 lookback"))?;
@@ -411,6 +512,21 @@ fn main() -> anyhow::Result<()> {
             if !result.risk_events.is_empty() {
                 write_csv_rows(&format!("{}/risk_events.csv", cfg.output_dir), &result.risk_events)?;
             }
+            write_diagnostics(
+                &format!("{}/risk_summary.txt", cfg.output_dir),
+                &render_risk_summary(
+                    cfg.risk.as_ref(),
+                    dates.len(),
+                    usize::from(result.summary.halted_by_risk),
+                    1,
+                    &result
+                        .summary
+                        .halt_reason
+                        .clone()
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                ),
+            )?;
 
             let manifest_path = infer_manifest_path(&asset_files).unwrap();
             let summary_json_path = infer_summary_json_path(&asset_files).unwrap();
@@ -457,11 +573,11 @@ fn main() -> anyhow::Result<()> {
             println!("贡献最低资产：{:?}", result.worst_contributor);
         }
         "momentum_batch" => {
-            validate_risk_config(cfg.risk.as_ref())?;
             let asset_files = cfg
                 .asset_files
                 .clone()
                 .ok_or_else(|| anyhow!("momentum_batch 需要提供 asset_files"))?;
+            validate_risk_config(cfg.risk.as_ref(), Some(asset_files.len()))?;
             let lookbacks = cfg
                 .lookbacks
                 .clone()
@@ -720,6 +836,17 @@ fn main() -> anyhow::Result<()> {
                                 trade_count: result.summary.trade_count,
                                 total_cost_paid: result.summary.total_cost_paid,
                                 final_equity: result.summary.final_equity,
+                                halted_by_risk: result.summary.halted_by_risk,
+                                halt_event_type: result
+                                    .risk_events
+                                    .last()
+                                    .map(|event| event.event_type.clone())
+                                    .unwrap_or_default(),
+                                halt_reason: result
+                                    .summary
+                                    .halt_reason
+                                    .clone()
+                                    .unwrap_or_default(),
                                 top_contributor,
                                 worst_contributor,
                                 output_dir: exp_dir,
@@ -769,6 +896,7 @@ fn main() -> anyhow::Result<()> {
                 .take(3)
                 .map(|r| format!("{} ({:.2}%)", r.experiment_id, r.total_return * 100.0))
                 .collect();
+            let halted_count = rows.iter().filter(|row| row.halted_by_risk).count();
             let low_drawdown_candidate = rows
                 .iter()
                 .min_by(|a, b| a.max_drawdown.partial_cmp(&b.max_drawdown).unwrap())
@@ -921,13 +1049,14 @@ fn main() -> anyhow::Result<()> {
             }
 
             let summary = format!(
-                "=== 批量实验摘要 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n实验数量: {}\n收益前三组合: {}\n最低回撤候选: {}\n配置快照: {}/config_snapshot.json\n结果总表: {}/batch_results.csv\n实验索引: {}/experiment_index.csv\n",
+                "=== 批量实验摘要 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n实验数量: {}\n触发风控实验数: {}\n收益前三组合: {}\n最低回撤候选: {}\n配置快照: {}/config_snapshot.json\n结果总表: {}/batch_results.csv\n实验索引: {}/experiment_index.csv\n",
                 cfg.experiment_name,
                 cfg.strategy,
                 manifest_path.display(),
                 summary_json_path.display(),
                 summary_txt_path.display(),
                 rows.len(),
+                halted_count,
                 top_by_return.join(", "),
                 low_drawdown_candidate,
                 cfg.output_dir,
@@ -935,6 +1064,16 @@ fn main() -> anyhow::Result<()> {
                 cfg.output_dir,
             );
             write_diagnostics(&format!("{}/batch_summary.txt", cfg.output_dir), &summary)?;
+            write_diagnostics(
+                &format!("{}/risk_summary.txt", cfg.output_dir),
+                &render_risk_summary(
+                    cfg.risk.as_ref(),
+                    aligned_dates.len(),
+                    halted_count,
+                    rows.len(),
+                    &summarize_halt_reasons(&rows),
+                ),
+            )?;
 
             let stage_report = if let Some(research_cfg) = &cfg.research {
                 let full_assessments =
@@ -992,4 +1131,25 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_risk_config_rejects_insufficient_asset_universe() {
+        let risk = config::RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: Some(0.4),
+            max_daily_loss_limit: None,
+            max_drawdown_limit: None,
+            max_rebalance_turnover: None,
+        };
+
+        let err = validate_risk_config(Some(&risk), Some(2)).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("无法满足 risk.max_single_asset_weight"));
+    }
 }

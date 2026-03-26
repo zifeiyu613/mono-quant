@@ -108,9 +108,33 @@ pub fn run_momentum_topn_backtest(
     let mut halted_by_risk = false;
     let mut halt_reason = None;
 
+    if let Some(max_weight) = risk.and_then(|cfg| cfg.max_single_asset_weight) {
+        let required_assets = required_asset_count_for_max_weight(max_weight);
+        if asset_maps.len() < required_assets {
+            let reason = format!(
+                "资产池数量 {} 低于单资产权重上限 {:.2}% 所需的最少资产数 {}，组合已停止运行",
+                asset_maps.len(),
+                max_weight * 100.0,
+                required_assets
+            );
+            risk_events.push(RiskEventRow {
+                date: dates
+                    .get(lookback)
+                    .or_else(|| dates.first())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "N/A".to_string()),
+                event_type: "asset_universe_stop".to_string(),
+                detail: reason.clone(),
+            });
+            halt_reason = Some(reason);
+            halted_by_risk = true;
+        }
+    }
+
     for i in lookback..dates.len() - 1 {
         let date = dates[i];
         let next_date = dates[i + 1];
+        let previous_equity = total_equity;
 
         if !halted_by_risk && (i - lookback) % rebalance_freq == 0 {
             let ranking = rank_assets_by_lookback(asset_maps, &dates, i, lookback);
@@ -217,6 +241,30 @@ pub fn run_momentum_topn_backtest(
         if !holdings_value.is_empty() {
             total_equity = holdings_value.values().sum::<f64>();
         }
+        let daily_return = if previous_equity > 0.0 {
+            total_equity / previous_equity - 1.0
+        } else {
+            0.0
+        };
+        if !halted_by_risk {
+            if let Some(limit) = risk.and_then(|cfg| cfg.max_daily_loss_limit) {
+                if daily_return <= -limit {
+                    halted_by_risk = true;
+                    let reason = format!(
+                        "单日组合收益 {:.2}% 触发单日亏损上限 {:.2}%，组合已切换为空仓",
+                        daily_return * 100.0,
+                        limit * 100.0
+                    );
+                    halt_reason = Some(reason.clone());
+                    risk_events.push(RiskEventRow {
+                        date: next_date.to_string(),
+                        event_type: "daily_loss_stop".to_string(),
+                        detail: reason,
+                    });
+                    holdings_value.clear();
+                }
+            }
+        }
         if total_equity > peak_equity {
             peak_equity = total_equity;
         }
@@ -302,6 +350,10 @@ fn effective_selected_count(
     }
 }
 
+pub fn required_asset_count_for_max_weight(max_weight: f64) -> usize {
+    (1.0 / max_weight).ceil() as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -353,11 +405,39 @@ mod tests {
         maps
     }
 
+    fn sample_two_asset_maps() -> HashMap<String, HashMap<NaiveDate, Bar>> {
+        let mut maps = HashMap::new();
+        let asset_a = vec![
+            bar("2024-01-01", 100.0),
+            bar("2024-01-02", 102.0),
+            bar("2024-01-03", 104.0),
+            bar("2024-01-04", 106.0),
+            bar("2024-01-05", 108.0),
+        ];
+        let asset_b = vec![
+            bar("2024-01-01", 100.0),
+            bar("2024-01-02", 101.0),
+            bar("2024-01-03", 102.0),
+            bar("2024-01-04", 103.0),
+            bar("2024-01-05", 104.0),
+        ];
+        maps.insert(
+            "a".to_string(),
+            asset_a.into_iter().map(|item| (item.date, item)).collect(),
+        );
+        maps.insert(
+            "b".to_string(),
+            asset_b.into_iter().map(|item| (item.date, item)).collect(),
+        );
+        maps
+    }
+
     #[test]
     fn drawdown_guard_halts_strategy() {
         let risk = RiskConfig {
             min_aligned_days: None,
             max_single_asset_weight: None,
+            max_daily_loss_limit: None,
             max_drawdown_limit: Some(0.05),
             max_rebalance_turnover: None,
         };
@@ -376,6 +456,7 @@ mod tests {
         let risk = RiskConfig {
             min_aligned_days: None,
             max_single_asset_weight: None,
+            max_daily_loss_limit: None,
             max_drawdown_limit: None,
             max_rebalance_turnover: Some(0.0),
         };
@@ -397,6 +478,7 @@ mod tests {
         let risk = RiskConfig {
             min_aligned_days: None,
             max_single_asset_weight: Some(0.4),
+            max_daily_loss_limit: None,
             max_drawdown_limit: None,
             max_rebalance_turnover: None,
         };
@@ -407,5 +489,44 @@ mod tests {
             .rebalances
             .iter()
             .any(|row| row.selected_assets.split('|').count() >= 3));
+    }
+
+    #[test]
+    fn daily_loss_guard_halts_strategy() {
+        let risk = RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: None,
+            max_daily_loss_limit: Some(0.1),
+            max_drawdown_limit: None,
+            max_rebalance_turnover: None,
+        };
+
+        let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
+
+        assert!(result.summary.halted_by_risk);
+        assert!(result
+            .risk_events
+            .iter()
+            .any(|event| event.event_type == "daily_loss_stop"));
+    }
+
+    #[test]
+    fn asset_universe_guard_halts_when_weight_cap_cannot_be_satisfied() {
+        let risk = RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: Some(0.4),
+            max_daily_loss_limit: None,
+            max_drawdown_limit: None,
+            max_rebalance_turnover: None,
+        };
+
+        let result =
+            run_momentum_topn_backtest(&sample_two_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
+
+        assert!(result.summary.halted_by_risk);
+        assert!(result
+            .risk_events
+            .iter()
+            .any(|event| event.event_type == "asset_universe_stop"));
     }
 }

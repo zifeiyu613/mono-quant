@@ -16,6 +16,7 @@
   "risk": {
     "min_aligned_days": 250,
     "max_single_asset_weight": 0.5,
+    "max_daily_loss_limit": 0.08,
     "max_drawdown_limit": 0.15,
     "max_rebalance_turnover": 0.8
   },

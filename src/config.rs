@@ -55,6 +55,7 @@ pub struct HypothesisConfig {
 pub struct RiskConfig {
     pub min_aligned_days: Option<usize>,
     pub max_single_asset_weight: Option<f64>,
+    pub max_daily_loss_limit: Option<f64>,
     pub max_drawdown_limit: Option<f64>,
     pub max_rebalance_turnover: Option<f64>,
 }

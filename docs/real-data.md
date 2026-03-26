@@ -156,6 +156,11 @@ data/processed/
 
 进入 P1 后，如果回测触发了最小风控，还会在对应输出目录额外生成：
 - `risk_events.csv`
+- `risk_summary.txt`
+
+其中：
+- `risk_summary.txt` 会记录主要停机原因
+- `batch_results.csv` 和 `experiment_index.csv` 会记录 `halt_event_type` 与 `halt_reason`
 
 然后会在日志里打印 processed 摘要前几行。
 
@@ -174,6 +179,7 @@ data/processed/
 - 字段顺序统一
 - 不需要每次在引擎里重新处理 raw 层脏活
 - 启动前能看到本次使用的数据摘要
+- 如果 `max_single_asset_weight` 对应的最小资产数都不满足，会直接拒绝运行，避免组合静默超配
 
 你可以把它理解成：
 
