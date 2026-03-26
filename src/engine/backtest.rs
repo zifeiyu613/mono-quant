@@ -1,7 +1,8 @@
+use crate::config::RiskConfig;
 use crate::data::{intersect_dates, Bar};
 use crate::engine::portfolio::compute_turnover_amount;
 use crate::metrics::max_drawdown;
-use crate::report::{ContributionRow, HoldingTraceRow, RebalanceRow};
+use crate::report::{ContributionRow, HoldingTraceRow, RebalanceRow, RiskEventRow};
 use crate::strategy::momentum_topn::rank_assets_by_lookback;
 use chrono::NaiveDate;
 use std::collections::HashMap;
@@ -13,6 +14,8 @@ pub struct BacktestSummary {
     pub trade_count: usize,
     pub total_cost_paid: f64,
     pub final_equity: f64,
+    pub halted_by_risk: bool,
+    pub halt_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -22,6 +25,7 @@ pub struct MomentumTopNResult {
     pub rebalances: Vec<RebalanceRow>,
     pub holdings_trace: Vec<HoldingTraceRow>,
     pub contributions: Vec<ContributionRow>,
+    pub risk_events: Vec<RiskEventRow>,
     pub top_contributor: Option<(String, f64)>,
     pub worst_contributor: Option<(String, f64)>,
 }
@@ -72,6 +76,8 @@ pub fn run_ma_backtest(
         trade_count,
         total_cost_paid,
         final_equity: equity,
+        halted_by_risk: false,
+        halt_reason: None,
     };
     (summary, curve)
 }
@@ -84,26 +90,36 @@ pub fn run_momentum_topn_backtest(
     top_n: usize,
     commission: f64,
     slippage: f64,
+    risk: Option<&RiskConfig>,
 ) -> MomentumTopNResult {
     let dates = intersect_dates(asset_maps);
     let unit_cost = commission + slippage;
     let mut total_equity = 1.0;
     let mut holdings_value: HashMap<String, f64> = HashMap::new();
+    let mut peak_equity = total_equity;
     let mut equity_curve = vec![(dates[lookback], total_equity)];
     let mut rebalance_rows = Vec::new();
     let mut holdings_trace = Vec::new();
     let mut contribution_rows = Vec::new();
+    let mut risk_events = Vec::new();
     let mut contribution_sum: HashMap<String, f64> = HashMap::new();
     let mut total_cost_paid = 0.0;
     let mut trade_count = 0usize;
+    let mut halted_by_risk = false;
+    let mut halt_reason = None;
 
     for i in lookback..dates.len() - 1 {
         let date = dates[i];
         let next_date = dates[i + 1];
 
-        if (i - lookback) % rebalance_freq == 0 {
+        if !halted_by_risk && (i - lookback) % rebalance_freq == 0 {
             let ranking = rank_assets_by_lookback(asset_maps, &dates, i, lookback);
-            let selected: Vec<String> = ranking.into_iter().take(top_n).map(|x| x.0).collect();
+            let selected_count = effective_selected_count(top_n, ranking.len(), risk);
+            let selected: Vec<String> = ranking
+                .into_iter()
+                .take(selected_count)
+                .map(|item| item.0)
+                .collect();
 
             let total_before = if holdings_value.is_empty() {
                 total_equity
@@ -119,6 +135,33 @@ pub fn run_momentum_topn_backtest(
             }
 
             let turnover_amount = compute_turnover_amount(&holdings_value, &target_values);
+            let turnover_ratio = if total_before > 0.0 {
+                turnover_amount / total_before
+            } else {
+                0.0
+            };
+            if let Some(limit) = risk.and_then(|cfg| cfg.max_rebalance_turnover) {
+                if turnover_ratio > limit {
+                    risk_events.push(RiskEventRow {
+                        date: date.to_string(),
+                        event_type: "turnover_guard".to_string(),
+                        detail: format!(
+                            "本次调仓换手率 {:.2}% 超过上限 {:.2}%，已跳过调仓",
+                            turnover_ratio * 100.0,
+                            limit * 100.0
+                        ),
+                    });
+                    rebalance_rows.push(RebalanceRow {
+                        date: date.to_string(),
+                        selected_assets: "SKIPPED_BY_RISK".to_string(),
+                        turnover_amount,
+                        cost: 0.0,
+                        equity_before: total_before,
+                        equity_after: total_before,
+                    });
+                    continue;
+                }
+            }
             let cost = turnover_amount * unit_cost;
             total_equity -= cost;
             total_cost_paid += cost;
@@ -171,7 +214,36 @@ pub fn run_momentum_topn_backtest(
             }
         }
 
-        total_equity = holdings_value.values().sum::<f64>();
+        if !holdings_value.is_empty() {
+            total_equity = holdings_value.values().sum::<f64>();
+        }
+        if total_equity > peak_equity {
+            peak_equity = total_equity;
+        }
+        let current_drawdown = if peak_equity > 0.0 {
+            total_equity / peak_equity - 1.0
+        } else {
+            0.0
+        };
+        if !halted_by_risk {
+            if let Some(limit) = risk.and_then(|cfg| cfg.max_drawdown_limit) {
+                if current_drawdown <= -limit {
+                    halted_by_risk = true;
+                    let reason = format!(
+                        "当前回撤 {:.2}% 触发最大回撤上限 {:.2}%，组合已切换为空仓",
+                        current_drawdown * 100.0,
+                        limit * 100.0
+                    );
+                    halt_reason = Some(reason.clone());
+                    risk_events.push(RiskEventRow {
+                        date: next_date.to_string(),
+                        event_type: "drawdown_stop".to_string(),
+                        detail: reason,
+                    });
+                    holdings_value.clear();
+                }
+            }
+        }
         equity_curve.push((next_date, total_equity));
 
         for (asset, value) in &holdings_value {
@@ -198,6 +270,8 @@ pub fn run_momentum_topn_backtest(
         trade_count,
         total_cost_paid,
         final_equity: total_equity,
+        halted_by_risk,
+        halt_reason,
     };
 
     MomentumTopNResult {
@@ -206,7 +280,132 @@ pub fn run_momentum_topn_backtest(
         rebalances: rebalance_rows,
         holdings_trace,
         contributions: contribution_rows,
+        risk_events,
         top_contributor,
         worst_contributor,
+    }
+}
+
+fn effective_selected_count(
+    requested_top_n: usize,
+    available_assets: usize,
+    risk: Option<&RiskConfig>,
+) -> usize {
+    if available_assets == 0 {
+        return 0;
+    }
+    if let Some(max_weight) = risk.and_then(|cfg| cfg.max_single_asset_weight) {
+        let required_assets = (1.0 / max_weight).ceil() as usize;
+        requested_top_n.max(required_assets).min(available_assets)
+    } else {
+        requested_top_n.min(available_assets)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn bar(date: &str, close: f64) -> Bar {
+        Bar {
+            date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
+            open: close,
+            close,
+        }
+    }
+
+    fn sample_asset_maps() -> HashMap<String, HashMap<NaiveDate, Bar>> {
+        let mut maps = HashMap::new();
+        let asset_a = vec![
+            bar("2024-01-01", 100.0),
+            bar("2024-01-02", 110.0),
+            bar("2024-01-03", 90.0),
+            bar("2024-01-04", 80.0),
+            bar("2024-01-05", 70.0),
+        ];
+        let asset_b = vec![
+            bar("2024-01-01", 100.0),
+            bar("2024-01-02", 101.0),
+            bar("2024-01-03", 102.0),
+            bar("2024-01-04", 103.0),
+            bar("2024-01-05", 104.0),
+        ];
+        let asset_c = vec![
+            bar("2024-01-01", 100.0),
+            bar("2024-01-02", 100.5),
+            bar("2024-01-03", 101.0),
+            bar("2024-01-04", 101.5),
+            bar("2024-01-05", 102.0),
+        ];
+        maps.insert(
+            "a".to_string(),
+            asset_a.into_iter().map(|item| (item.date, item)).collect(),
+        );
+        maps.insert(
+            "b".to_string(),
+            asset_b.into_iter().map(|item| (item.date, item)).collect(),
+        );
+        maps.insert(
+            "c".to_string(),
+            asset_c.into_iter().map(|item| (item.date, item)).collect(),
+        );
+        maps
+    }
+
+    #[test]
+    fn drawdown_guard_halts_strategy() {
+        let risk = RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: None,
+            max_drawdown_limit: Some(0.05),
+            max_rebalance_turnover: None,
+        };
+
+        let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
+
+        assert!(result.summary.halted_by_risk);
+        assert!(result
+            .risk_events
+            .iter()
+            .any(|event| event.event_type == "drawdown_stop"));
+    }
+
+    #[test]
+    fn turnover_guard_skips_rebalance() {
+        let risk = RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: None,
+            max_drawdown_limit: None,
+            max_rebalance_turnover: Some(0.0),
+        };
+
+        let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
+
+        assert!(result
+            .risk_events
+            .iter()
+            .any(|event| event.event_type == "turnover_guard"));
+        assert!(result
+            .rebalances
+            .iter()
+            .any(|row| row.selected_assets == "SKIPPED_BY_RISK"));
+    }
+
+    #[test]
+    fn max_single_asset_weight_expands_selection_count() {
+        let risk = RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: Some(0.4),
+            max_drawdown_limit: None,
+            max_rebalance_turnover: None,
+        };
+
+        let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
+
+        assert!(result
+            .rebalances
+            .iter()
+            .any(|row| row.selected_assets.split('|').count() >= 3));
     }
 }

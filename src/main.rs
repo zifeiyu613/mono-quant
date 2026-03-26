@@ -11,13 +11,15 @@ use chrono::NaiveDate;
 use config::load_config;
 use report::{
     ensure_output_dir, write_contributions, write_diagnostics, write_equity_curve,
-    write_experiment_index, write_holdings_trace, write_hypothesis_assessments,
+    write_csv_rows, write_experiment_index, write_holdings_trace, write_hypothesis_assessments,
     write_rebalance_log, EquityRow, ExperimentIndexRow,
 };
 use research::{
-    apply_manual_override, assessments_to_rows, assess_hypotheses, build_sample_split_plan,
+    apply_manual_override, assessments_to_rows, assess_hypotheses, build_evidence_summary,
+    build_sample_split_plan, build_walk_forward_windows, cost_sensitivity_detail_rows,
     decide_research_state, render_governance_summary, render_research_decision,
-    render_research_plan, BatchRowView,
+    render_research_plan, render_walk_forward_plan, summarize_cost_sensitivity,
+    summarize_walk_forward_assessments, walk_forward_detail_rows, BatchRowView,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -57,6 +59,7 @@ fn to_batch_row_views(rows: &[BatchResultRow]) -> Vec<BatchRowView> {
             lookback: row.lookback,
             rebalance_freq: row.rebalance_freq,
             top_n: row.top_n,
+            unit_cost: row.unit_cost,
             total_return: row.total_return,
             max_drawdown: row.max_drawdown,
             total_cost_paid: row.total_cost_paid,
@@ -105,6 +108,27 @@ fn push_batch_result_row(
 /// 为较长的研究流程打印统一格式的信息日志。
 fn log_info(message: &str) {
     println!("[信息] {}", message);
+}
+
+fn validate_risk_config(risk: Option<&config::RiskConfig>) -> anyhow::Result<()> {
+    if let Some(risk_cfg) = risk {
+        if let Some(limit) = risk_cfg.max_single_asset_weight {
+            if !(0.0..=1.0).contains(&limit) || limit == 0.0 {
+                return Err(anyhow!("risk.max_single_asset_weight 必须介于 0 和 1 之间"));
+            }
+        }
+        if let Some(limit) = risk_cfg.max_drawdown_limit {
+            if !(0.0..=1.0).contains(&limit) || limit == 0.0 {
+                return Err(anyhow!("risk.max_drawdown_limit 必须介于 0 和 1 之间"));
+            }
+        }
+        if let Some(limit) = risk_cfg.max_rebalance_turnover {
+            if !(0.0..=1.0).contains(&limit) {
+                return Err(anyhow!("risk.max_rebalance_turnover 必须介于 0 和 1 之间"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 解析 `--config` 命令行参数，并返回 JSON 配置路径。
@@ -295,6 +319,7 @@ fn main() -> anyhow::Result<()> {
         }
         "momentum_topn" => {
             ensure_output_dir(&cfg.output_dir)?;
+            validate_risk_config(cfg.risk.as_ref())?;
             let asset_files = cfg
                 .asset_files
                 .clone()
@@ -341,6 +366,15 @@ fn main() -> anyhow::Result<()> {
                     dates.len()
                 ));
             }
+            if let Some(min_days) = cfg.risk.as_ref().and_then(|risk| risk.min_aligned_days) {
+                if dates.len() < min_days {
+                    return Err(anyhow!(
+                        "momentum_topn 的对齐交易日不足：当前 {}，低于风控要求的最小样本 {}",
+                        dates.len(),
+                        min_days
+                    ));
+                }
+            }
 
             println!(
                 "对齐区间：{} -> {}（共 {} 个对齐交易日）",
@@ -356,6 +390,7 @@ fn main() -> anyhow::Result<()> {
                 top_n,
                 commission,
                 slippage,
+                cfg.risk.as_ref(),
             );
 
             let equity_rows: Vec<EquityRow> = result
@@ -373,12 +408,15 @@ fn main() -> anyhow::Result<()> {
                 &format!("{}/asset_contribution.csv", cfg.output_dir),
                 &result.contributions,
             )?;
+            if !result.risk_events.is_empty() {
+                write_csv_rows(&format!("{}/risk_events.csv", cfg.output_dir), &result.risk_events)?;
+            }
 
             let manifest_path = infer_manifest_path(&asset_files).unwrap();
             let summary_json_path = infer_summary_json_path(&asset_files).unwrap();
             let summary_txt_path = infer_summary_txt_path(&asset_files).unwrap();
             let diagnostics = format!(
-                "=== 诊断信息 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n资产列表: {}\nlookback: {}\nrebalance_freq: {}\ntop_n: {}\n手续费: {}\n滑点: {}\n对齐交易日数量: {}\n开始日期: {}\n结束日期: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n调仓次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n输出文件:\n- equity_curve.csv\n- rebalance_log.csv\n- holdings_trace.csv\n- asset_contribution.csv\n",
+                "=== 诊断信息 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n资产列表: {}\nlookback: {}\nrebalance_freq: {}\ntop_n: {}\n手续费: {}\n滑点: {}\n对齐交易日数量: {}\n开始日期: {}\n结束日期: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n调仓次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n是否触发风控停机: {}\n风控停机原因: {}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n输出文件:\n- equity_curve.csv\n- rebalance_log.csv\n- holdings_trace.csv\n- asset_contribution.csv\n- risk_events.csv（如触发风控）\n",
                 cfg.experiment_name,
                 cfg.strategy,
                 manifest_path.display(),
@@ -398,6 +436,11 @@ fn main() -> anyhow::Result<()> {
                 result.summary.trade_count,
                 result.summary.total_cost_paid,
                 result.summary.final_equity,
+                result.summary.halted_by_risk,
+                result.summary
+                    .halt_reason
+                    .clone()
+                    .unwrap_or_else(|| "未触发".to_string()),
                 result.top_contributor,
                 result.worst_contributor,
             );
@@ -409,10 +452,12 @@ fn main() -> anyhow::Result<()> {
             println!("调仓次数：{}", result.summary.trade_count);
             println!("总成本：{:.6}", result.summary.total_cost_paid);
             println!("期末净值：{:.4}", result.summary.final_equity);
+            println!("是否触发风控停机：{}", result.summary.halted_by_risk);
             println!("贡献最高资产：{:?}", result.top_contributor);
             println!("贡献最低资产：{:?}", result.worst_contributor);
         }
         "momentum_batch" => {
+            validate_risk_config(cfg.risk.as_ref())?;
             let asset_files = cfg
                 .asset_files
                 .clone()
@@ -456,11 +501,26 @@ fn main() -> anyhow::Result<()> {
                 );
             }
             let aligned_dates = data::intersect_dates(&asset_maps);
+            if let Some(min_days) = cfg.risk.as_ref().and_then(|risk| risk.min_aligned_days) {
+                if aligned_dates.len() < min_days {
+                    return Err(anyhow!(
+                        "momentum_batch 的对齐交易日不足：当前 {}，低于风控要求的最小样本 {}",
+                        aligned_dates.len(),
+                        min_days
+                    ));
+                }
+            }
             let sample_split_plan = cfg
                 .research
                 .as_ref()
                 .and_then(|research_cfg| research_cfg.sample_split.as_ref())
                 .map(|split_cfg| build_sample_split_plan(split_cfg, &aligned_dates))
+                .transpose()?;
+            let walk_forward_windows = cfg
+                .research
+                .as_ref()
+                .and_then(|research_cfg| research_cfg.walk_forward.as_ref())
+                .map(|walk_cfg| build_walk_forward_windows(walk_cfg, &aligned_dates))
                 .transpose()?;
             let in_sample_asset_maps = sample_split_plan.as_ref().map(|plan| {
                 data::filter_asset_maps_by_date_range(&asset_maps, plan.in_sample_start, plan.in_sample_end)
@@ -476,6 +536,10 @@ fn main() -> anyhow::Result<()> {
             let mut rows: Vec<BatchResultRow> = Vec::new();
             let mut in_sample_rows: Vec<BatchResultRow> = Vec::new();
             let mut out_sample_rows: Vec<BatchResultRow> = Vec::new();
+            let mut walk_forward_rows: Vec<Vec<BatchResultRow>> = walk_forward_windows
+                .as_ref()
+                .map(|windows| (0..windows.len()).map(|_| Vec::new()).collect())
+                .unwrap_or_default();
             let mut index_rows: Vec<ExperimentIndexRow> = Vec::new();
             let mut exp_num = 1usize;
 
@@ -498,6 +562,7 @@ fn main() -> anyhow::Result<()> {
                                 *top_n,
                                 unit_cost / 2.0,
                                 unit_cost / 2.0,
+                                cfg.risk.as_ref(),
                             );
 
                             let equity_rows: Vec<EquityRow> = result
@@ -515,6 +580,9 @@ fn main() -> anyhow::Result<()> {
                                 &format!("{}/asset_contribution.csv", exp_dir),
                                 &result.contributions,
                             )?;
+                            if !result.risk_events.is_empty() {
+                                write_csv_rows(&format!("{}/risk_events.csv", exp_dir), &result.risk_events)?;
+                            }
                             let top_contributor = result
                                 .top_contributor
                                 .clone()
@@ -527,7 +595,7 @@ fn main() -> anyhow::Result<()> {
                                 .unwrap_or_default();
 
                             let diag = format!(
-                                "实验ID: {}\n数据层: processed\nlookback: {}\nrebalance_freq: {}\ntop_n: {}\n单位成本: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n交易次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n",
+                                "实验ID: {}\n数据层: processed\nlookback: {}\nrebalance_freq: {}\ntop_n: {}\n单位成本: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n交易次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n是否触发风控停机: {}\n风控停机原因: {}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n",
                                 exp_id,
                                 lookback,
                                 rebalance_freq,
@@ -538,6 +606,11 @@ fn main() -> anyhow::Result<()> {
                                 result.summary.trade_count,
                                 result.summary.total_cost_paid,
                                 result.summary.final_equity,
+                                result.summary.halted_by_risk,
+                                result.summary
+                                    .halt_reason
+                                    .clone()
+                                    .unwrap_or_else(|| "未触发".to_string()),
                                 result.top_contributor,
                                 result.worst_contributor,
                             );
@@ -564,6 +637,7 @@ fn main() -> anyhow::Result<()> {
                                         *top_n,
                                         unit_cost / 2.0,
                                         unit_cost / 2.0,
+                                        cfg.risk.as_ref(),
                                     );
                                     push_batch_result_row(
                                         &mut in_sample_rows,
@@ -588,6 +662,7 @@ fn main() -> anyhow::Result<()> {
                                         *top_n,
                                         unit_cost / 2.0,
                                         unit_cost / 2.0,
+                                        cfg.risk.as_ref(),
                                     );
                                     push_batch_result_row(
                                         &mut out_sample_rows,
@@ -599,6 +674,38 @@ fn main() -> anyhow::Result<()> {
                                         *unit_cost,
                                         &scoped_result,
                                     );
+                                }
+                            }
+
+                            if let Some(windows) = &walk_forward_windows {
+                                for (window_index, window) in windows.iter().enumerate() {
+                                    let scope_asset_maps = data::filter_asset_maps_by_date_range(
+                                        &asset_maps,
+                                        window.test_start,
+                                        window.test_end,
+                                    );
+                                    let scope_dates = data::intersect_dates(&scope_asset_maps);
+                                    if scope_dates.len() > lookback + 1 {
+                                        let scoped_result = engine::backtest::run_momentum_topn_backtest(
+                                            &scope_asset_maps,
+                                            lookback,
+                                            *rebalance_freq,
+                                            *top_n,
+                                            unit_cost / 2.0,
+                                            unit_cost / 2.0,
+                                            cfg.risk.as_ref(),
+                                        );
+                                        push_batch_result_row(
+                                            &mut walk_forward_rows[window_index],
+                                            &exp_id,
+                                            &exp_dir,
+                                            lookback,
+                                            *rebalance_freq,
+                                            *top_n,
+                                            *unit_cost,
+                                            &scoped_result,
+                                        );
+                                    }
                                 }
                             }
 
@@ -639,6 +746,23 @@ fn main() -> anyhow::Result<()> {
                     &out_sample_rows,
                 )?;
             }
+            if let Some(windows) = &walk_forward_windows {
+                for (index, rows) in walk_forward_rows.iter_mut().enumerate() {
+                    rows.sort_by(|a, b| b.total_return.partial_cmp(&a.total_return).unwrap());
+                    write_batch_results_csv(
+                        &format!(
+                            "{}/batch_results_walk_forward_window_{:02}.csv",
+                            cfg.output_dir,
+                            index + 1
+                        ),
+                        rows,
+                    )?;
+                }
+                write_diagnostics(
+                    &format!("{}/walk_forward_plan.txt", cfg.output_dir),
+                    &render_walk_forward_plan(windows),
+                )?;
+            }
 
             let top_by_return: Vec<String> = rows
                 .iter()
@@ -671,6 +795,35 @@ fn main() -> anyhow::Result<()> {
                 } else {
                     None
                 };
+                let walk_forward_assessments: Vec<Vec<_>> = if walk_forward_windows.is_some() {
+                    walk_forward_rows
+                        .iter()
+                        .map(|rows| assess_hypotheses(research_cfg, &to_batch_row_views(rows)))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let walk_forward_detail = if let Some(windows) = &walk_forward_windows {
+                    walk_forward_detail_rows(windows, &walk_forward_assessments)
+                } else {
+                    Vec::new()
+                };
+                let walk_forward_summary =
+                    summarize_walk_forward_assessments(research_cfg, &walk_forward_assessments);
+                let cost_sensitivity_detail =
+                    cost_sensitivity_detail_rows(research_cfg, &full_row_views);
+                let cost_sensitivity_summary =
+                    summarize_cost_sensitivity(research_cfg, &cost_sensitivity_detail);
+                let evidence_summary = build_evidence_summary(
+                    research_cfg,
+                    &full_assessments,
+                    in_sample_assessments.as_deref(),
+                    out_sample_assessments.as_deref(),
+                    &walk_forward_summary,
+                    &cost_sensitivity_summary,
+                    aligned_dates.first().copied(),
+                    aligned_dates.last().copied(),
+                );
                 let auto_decision = decide_research_state(
                     research_cfg,
                     &full_assessments,
@@ -699,6 +852,36 @@ fn main() -> anyhow::Result<()> {
                         &assessments_to_rows(assessments),
                     )?;
                 }
+                if !walk_forward_detail.is_empty() {
+                    write_csv_rows(
+                        &format!("{}/walk_forward_assessment_detail.csv", cfg.output_dir),
+                        &walk_forward_detail,
+                    )?;
+                }
+                if !walk_forward_summary.is_empty() {
+                    write_csv_rows(
+                        &format!("{}/walk_forward_assessment_summary.csv", cfg.output_dir),
+                        &walk_forward_summary,
+                    )?;
+                }
+                if !cost_sensitivity_detail.is_empty() {
+                    write_csv_rows(
+                        &format!("{}/cost_sensitivity_detail.csv", cfg.output_dir),
+                        &cost_sensitivity_detail,
+                    )?;
+                }
+                if !cost_sensitivity_summary.is_empty() {
+                    write_csv_rows(
+                        &format!("{}/cost_sensitivity_summary.csv", cfg.output_dir),
+                        &cost_sensitivity_summary,
+                    )?;
+                }
+                if !evidence_summary.is_empty() {
+                    write_csv_rows(
+                        &format!("{}/research_evidence_summary.csv", cfg.output_dir),
+                        &evidence_summary,
+                    )?;
+                }
                 write_diagnostics(
                     &format!("{}/research_plan.txt", cfg.output_dir),
                     &render_research_plan(research_cfg),
@@ -711,6 +894,7 @@ fn main() -> anyhow::Result<()> {
                         &full_assessments,
                         in_sample_assessments.as_deref(),
                         out_sample_assessments.as_deref(),
+                        &evidence_summary,
                     ),
                 )?;
                 write_diagnostics(
@@ -721,14 +905,17 @@ fn main() -> anyhow::Result<()> {
                         &full_assessments,
                         in_sample_assessments.as_deref(),
                         out_sample_assessments.as_deref(),
+                        &evidence_summary,
                     ),
                 )?;
                 write_diagnostics(
                     &format!("{}/governance_summary.txt", cfg.output_dir),
                     &render_governance_summary(
                         sample_split_plan.as_ref(),
+                        walk_forward_windows.as_deref(),
                         &auto_decision,
                         &final_decision,
+                        &evidence_summary,
                     ),
                 )?;
             }
@@ -777,7 +964,7 @@ fn main() -> anyhow::Result<()> {
                     auto_decision.clone()
                 };
                 format!(
-                    "=== 阶段报告 ===\n实验名称: {}\n当前阶段: {}\n研究主题: {}\n研究轮次: {}\n决策来源: {}\n关键产出:\n1. processed_summary.json / processed_summary.txt 已生成。\n2. 多资产回测启动前会读取 processed 摘要并打印。\n3. hypothesis_assessment.csv + 样本内/样本外评估已生成。\n4. research_decision_auto.txt / research_decision.txt / governance_summary.txt 已生成。\n\n下一步建议:\n- {}\n- 针对最强支持假设继续缩小参数区间。\n- 对最弱假设补充样本外或成本敏感性验证。\n",
+                    "=== 阶段报告 ===\n实验名称: {}\n当前阶段: {}\n研究主题: {}\n研究轮次: {}\n决策来源: {}\n关键产出:\n1. processed_summary.json / processed_summary.txt 已生成。\n2. 多资产回测启动前会读取 processed 摘要并打印。\n3. hypothesis_assessment.csv + 样本内/样本外评估已生成。\n4. walk_forward_assessment_summary.csv / cost_sensitivity_summary.csv / research_evidence_summary.csv 已生成。\n5. research_decision_auto.txt / research_decision.txt / governance_summary.txt 已生成。\n\n下一步建议:\n- {}\n- 针对最强支持假设继续缩小参数区间。\n- 对最弱假设补充样本外或成本敏感性验证。\n",
                     cfg.experiment_name,
                     final_decision.state,
                     research_cfg.topic,

@@ -11,6 +11,15 @@ pub struct SampleSplitConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct WalkForwardConfig {
+    pub train_ratio: f64,
+    pub test_ratio: f64,
+    pub min_train_rows: Option<usize>,
+    pub min_test_rows: Option<usize>,
+    pub max_windows: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct DecisionOverrideConfig {
     pub final_state: String,
     pub recommended_action: Option<String>,
@@ -25,6 +34,7 @@ pub struct ResearchConfig {
     pub round: String,
     pub objective: Option<String>,
     pub sample_split: Option<SampleSplitConfig>,
+    pub walk_forward: Option<WalkForwardConfig>,
     pub decision_override: Option<DecisionOverrideConfig>,
     #[serde(default)]
     pub hypotheses: Vec<HypothesisConfig>,
@@ -39,6 +49,14 @@ pub struct HypothesisConfig {
     pub preferred_min_top_n: Option<usize>,
     pub preferred_min_rebalance_freq: Option<usize>,
     pub min_return_delta: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct RiskConfig {
+    pub min_aligned_days: Option<usize>,
+    pub max_single_asset_weight: Option<f64>,
+    pub max_drawdown_limit: Option<f64>,
+    pub max_rebalance_turnover: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -60,6 +78,7 @@ pub struct AppConfig {
     pub commission: Option<f64>,
     pub slippage: Option<f64>,
     pub stamp_tax_sell: Option<f64>,
+    pub risk: Option<RiskConfig>,
     pub research: Option<ResearchConfig>,
     pub output_dir: String,
 }

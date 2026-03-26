@@ -11,13 +11,26 @@
   "rebalance_freqs": [20, 60],
   "top_ns": [1, 2, 3],
   "unit_costs": [0.0002, 0.0004],
+  "risk": {
+    "min_aligned_days": 250,
+    "max_single_asset_weight": 0.5,
+    "max_drawdown_limit": 0.15,
+    "max_rebalance_turnover": 0.8
+  },
   "research": {
     "topic": "A股风格 ETF 动量轮动参数收敛",
     "round": "round_1",
-    "objective": "验证 lookback、Top N 和调仓频率对收益、回撤与成本的影响方向",
+    "objective": "在多年份样本上验证 lookback、Top N 和调仓频率对收益、回撤与成本的影响方向，并输出更稳健的 P0 研究证据",
     "sample_split": {
       "mode": "ratio",
       "in_sample_ratio": 0.7
+    },
+    "walk_forward": {
+      "train_ratio": 0.5,
+      "test_ratio": 0.25,
+      "max_windows": 2,
+      "min_train_rows": 120,
+      "min_test_rows": 65
     },
     "hypotheses": [
       {

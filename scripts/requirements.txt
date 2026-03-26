@@ -1,2 +1,2 @@
-tushare>=1.4.20
+akshare>=1.16.72
 pandas>=2.0.0

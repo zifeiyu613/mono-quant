@@ -1,8 +1,12 @@
-use crate::config::{DecisionOverrideConfig, HypothesisConfig, ResearchConfig, SampleSplitConfig};
+use crate::config::{
+    DecisionOverrideConfig, HypothesisConfig, ResearchConfig, SampleSplitConfig,
+    WalkForwardConfig,
+};
 use crate::report::HypothesisAssessmentRow;
 use anyhow::{anyhow, bail};
 use chrono::NaiveDate;
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +35,7 @@ pub struct BatchRowView {
     pub lookback: usize,
     pub rebalance_freq: usize,
     pub top_n: usize,
+    pub unit_cost: f64,
     pub total_return: f64,
     pub max_drawdown: f64,
     pub total_cost_paid: f64,
@@ -83,6 +88,86 @@ pub struct SampleSplitPlan {
     pub out_sample_end: NaiveDate,
     pub in_sample_rows: usize,
     pub out_sample_rows: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WalkForwardWindowPlan {
+    pub window_index: usize,
+    pub train_start: NaiveDate,
+    pub train_end: NaiveDate,
+    pub test_start: NaiveDate,
+    pub test_end: NaiveDate,
+    pub train_rows: usize,
+    pub test_rows: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WalkForwardAssessmentRow {
+    pub window_index: usize,
+    pub train_start: String,
+    pub train_end: String,
+    pub test_start: String,
+    pub test_end: String,
+    pub train_rows: usize,
+    pub test_rows: usize,
+    pub hypothesis_id: String,
+    pub statement: String,
+    pub support_level: String,
+    pub score: i32,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WalkForwardSummaryRow {
+    pub hypothesis_id: String,
+    pub statement: String,
+    pub total_windows: usize,
+    pub supported_windows: usize,
+    pub rejected_windows: usize,
+    pub strongest_support: String,
+    pub weakest_support: String,
+    pub average_score: f64,
+    pub consistency_ratio: f64,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CostSensitivityDetailRow {
+    pub unit_cost: f64,
+    pub hypothesis_id: String,
+    pub statement: String,
+    pub support_level: String,
+    pub score: i32,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CostSensitivitySummaryRow {
+    pub hypothesis_id: String,
+    pub statement: String,
+    pub cost_bucket_count: usize,
+    pub stable_bucket_count: usize,
+    pub strongest_support: String,
+    pub weakest_support: String,
+    pub score_spread: i32,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EvidenceSummaryRow {
+    pub hypothesis_id: String,
+    pub statement: String,
+    pub full_sample_support: String,
+    pub in_sample_support: String,
+    pub out_of_sample_support: String,
+    pub walk_forward_supported_windows: usize,
+    pub walk_forward_total_windows: usize,
+    pub cost_bucket_count: usize,
+    pub stable_cost_bucket_count: usize,
+    pub confidence_score: i32,
+    pub confidence_level: String,
+    pub failure_condition: String,
+    pub rationale: String,
 }
 
 #[derive(Debug, Clone)]
@@ -193,7 +278,7 @@ fn assess_one(hypothesis: &HypothesisConfig, rows: &[BatchRowView]) -> Hypothesi
             baseline_avg_cost: 0.0,
             score: 0,
             support_level: SupportLevel::Inconclusive,
-            rationale: "preferred group or baseline group has no experiments".to_string(),
+            rationale: "偏好组或基线组缺少可用实验，当前无法完成比较".to_string(),
         };
     }
 
@@ -289,14 +374,14 @@ pub fn build_sample_split_plan(
     aligned_dates: &[NaiveDate],
 ) -> anyhow::Result<SampleSplitPlan> {
     if aligned_dates.len() < 4 {
-        bail!("not enough aligned dates to build in-sample/out-of-sample split");
+        bail!("对齐交易日不足，无法构建样本内/样本外切分");
     }
 
     let split_index = match split_cfg.mode.as_str() {
         "ratio" => {
             let ratio = split_cfg.in_sample_ratio.unwrap_or(0.7);
             if !(0.0..1.0).contains(&ratio) {
-                bail!("in_sample_ratio must be between 0 and 1");
+                bail!("in_sample_ratio 必须介于 0 和 1 之间");
             }
             let index = ((aligned_dates.len() as f64) * ratio).floor() as usize;
             index.clamp(1, aligned_dates.len() - 2)
@@ -305,13 +390,13 @@ pub fn build_sample_split_plan(
             let split_date = split_cfg
                 .split_date
                 .as_ref()
-                .ok_or_else(|| anyhow!("split_date is required when sample_split.mode=date"))?;
+                .ok_or_else(|| anyhow!("当 sample_split.mode=date 时必须提供 split_date"))?;
             let boundary = NaiveDate::parse_from_str(split_date, "%Y-%m-%d")
-                .map_err(|_| anyhow!("split_date must use YYYY-MM-DD"))?;
+                .map_err(|_| anyhow!("split_date 必须使用 YYYY-MM-DD"))?;
             let index = aligned_dates
                 .iter()
                 .position(|date| *date >= boundary)
-                .ok_or_else(|| anyhow!("split_date is after the available aligned date range"))?;
+                .ok_or_else(|| anyhow!("split_date 超出了当前对齐交易日范围"))?;
             index.clamp(1, aligned_dates.len() - 2)
         }
         other => bail!("不支持的 sample_split.mode：{}", other),
@@ -328,6 +413,57 @@ pub fn build_sample_split_plan(
         in_sample_rows: split_index + 1,
         out_sample_rows: aligned_dates.len() - split_index - 1,
     })
+}
+
+pub fn build_walk_forward_windows(
+    walk_cfg: &WalkForwardConfig,
+    aligned_dates: &[NaiveDate],
+) -> anyhow::Result<Vec<WalkForwardWindowPlan>> {
+    if aligned_dates.len() < 6 {
+        bail!("对齐交易日不足，无法构建 walk-forward 窗口");
+    }
+    if !(0.0..1.0).contains(&walk_cfg.train_ratio) {
+        bail!("walk_forward.train_ratio 必须介于 0 和 1 之间");
+    }
+    if !(0.0..1.0).contains(&walk_cfg.test_ratio) {
+        bail!("walk_forward.test_ratio 必须介于 0 和 1 之间");
+    }
+
+    let total_rows = aligned_dates.len();
+    let mut train_rows = ((total_rows as f64) * walk_cfg.train_ratio).floor() as usize;
+    let mut test_rows = ((total_rows as f64) * walk_cfg.test_ratio).floor() as usize;
+
+    train_rows = train_rows.max(walk_cfg.min_train_rows.unwrap_or(0)).clamp(2, total_rows - 2);
+    test_rows = test_rows.max(walk_cfg.min_test_rows.unwrap_or(0)).max(2);
+
+    if train_rows + test_rows > total_rows {
+        bail!("walk-forward 初始训练窗口与测试窗口之和超过了可用交易日数量");
+    }
+
+    let max_windows = walk_cfg.max_windows.unwrap_or(usize::MAX);
+    let mut windows = Vec::new();
+    let mut train_end_index = train_rows - 1;
+
+    while train_end_index + test_rows < total_rows && windows.len() < max_windows {
+        let test_start_index = train_end_index + 1;
+        let test_end_index = test_start_index + test_rows - 1;
+        windows.push(WalkForwardWindowPlan {
+            window_index: windows.len() + 1,
+            train_start: aligned_dates[0],
+            train_end: aligned_dates[train_end_index],
+            test_start: aligned_dates[test_start_index],
+            test_end: aligned_dates[test_end_index],
+            train_rows: train_end_index + 1,
+            test_rows,
+        });
+        train_end_index = test_end_index;
+    }
+
+    if windows.is_empty() {
+        bail!("当前配置下无法生成任何 walk-forward 测试窗口");
+    }
+
+    Ok(windows)
 }
 
 pub fn decide_research_state(
@@ -463,6 +599,337 @@ pub fn apply_manual_override(
     }
 }
 
+pub fn render_walk_forward_plan(windows: &[WalkForwardWindowPlan]) -> String {
+    let mut lines = vec![
+        "=== Walk-Forward 计划 ===".to_string(),
+        format!("窗口数量: {}", windows.len()),
+    ];
+
+    for window in windows {
+        lines.push(format!(
+            "- 窗口 {}: 训练 {} -> {} ({} 行), 测试 {} -> {} ({} 行)",
+            window.window_index,
+            window.train_start,
+            window.train_end,
+            window.train_rows,
+            window.test_start,
+            window.test_end,
+            window.test_rows
+        ));
+    }
+
+    lines.join("\n") + "\n"
+}
+
+pub fn walk_forward_detail_rows(
+    windows: &[WalkForwardWindowPlan],
+    window_assessments: &[Vec<HypothesisAssessment>],
+) -> Vec<WalkForwardAssessmentRow> {
+    let mut rows = Vec::new();
+
+    for (window, assessments) in windows.iter().zip(window_assessments.iter()) {
+        for assessment in assessments {
+            rows.push(WalkForwardAssessmentRow {
+                window_index: window.window_index,
+                train_start: window.train_start.to_string(),
+                train_end: window.train_end.to_string(),
+                test_start: window.test_start.to_string(),
+                test_end: window.test_end.to_string(),
+                train_rows: window.train_rows,
+                test_rows: window.test_rows,
+                hypothesis_id: assessment.hypothesis_id.clone(),
+                statement: assessment.statement.clone(),
+                support_level: assessment.support_level.as_str().to_string(),
+                score: assessment.score,
+                rationale: assessment.rationale.clone(),
+            });
+        }
+    }
+
+    rows
+}
+
+pub fn summarize_walk_forward_assessments(
+    research: &ResearchConfig,
+    window_assessments: &[Vec<HypothesisAssessment>],
+) -> Vec<WalkForwardSummaryRow> {
+    let mut rows = Vec::new();
+
+    for hypothesis in &research.hypotheses {
+        let mut scores = Vec::new();
+        let mut levels = Vec::new();
+        for assessments in window_assessments {
+            if let Some(assessment) = assessments
+                .iter()
+                .find(|item| item.hypothesis_id == hypothesis.id)
+            {
+                scores.push(assessment.score);
+                levels.push(assessment.support_level);
+            }
+        }
+
+        if levels.is_empty() {
+            continue;
+        }
+
+        let supported_windows = levels.iter().filter(|level| is_positive_support(**level)).count();
+        let rejected_windows = levels
+            .iter()
+            .filter(|level| matches!(level, SupportLevel::Rejected | SupportLevel::NotSupported))
+            .count();
+        let strongest_support = *levels.iter().max().unwrap();
+        let weakest_support = *levels.iter().min().unwrap();
+        let average_score = scores.iter().map(|score| *score as f64).sum::<f64>() / scores.len() as f64;
+        let consistency_ratio = supported_windows as f64 / levels.len() as f64;
+
+        rows.push(WalkForwardSummaryRow {
+            hypothesis_id: hypothesis.id.clone(),
+            statement: hypothesis.statement.clone(),
+            total_windows: levels.len(),
+            supported_windows,
+            rejected_windows,
+            strongest_support: strongest_support.as_str().to_string(),
+            weakest_support: weakest_support.as_str().to_string(),
+            average_score,
+            consistency_ratio,
+            summary: format!(
+                "在 {} 个窗口中有 {} 个窗口保持正向支持，拒绝/不支持窗口 {} 个",
+                levels.len(),
+                supported_windows,
+                rejected_windows
+            ),
+        });
+    }
+
+    rows
+}
+
+pub fn cost_sensitivity_detail_rows(
+    research: &ResearchConfig,
+    rows: &[BatchRowView],
+) -> Vec<CostSensitivityDetailRow> {
+    let unit_costs = unique_unit_costs(rows);
+    let mut details = Vec::new();
+
+    for unit_cost in unit_costs {
+        let scoped_rows: Vec<BatchRowView> = rows
+            .iter()
+            .filter(|row| (row.unit_cost - unit_cost).abs() < 1e-12)
+            .cloned()
+            .collect();
+        for assessment in assess_hypotheses(research, &scoped_rows) {
+            details.push(CostSensitivityDetailRow {
+                unit_cost,
+                hypothesis_id: assessment.hypothesis_id,
+                statement: assessment.statement,
+                support_level: assessment.support_level.as_str().to_string(),
+                score: assessment.score,
+                rationale: assessment.rationale,
+            });
+        }
+    }
+
+    details
+}
+
+pub fn summarize_cost_sensitivity(
+    research: &ResearchConfig,
+    details: &[CostSensitivityDetailRow],
+) -> Vec<CostSensitivitySummaryRow> {
+    let mut rows = Vec::new();
+
+    for hypothesis in &research.hypotheses {
+        let scoped: Vec<&CostSensitivityDetailRow> = details
+            .iter()
+            .filter(|item| item.hypothesis_id == hypothesis.id)
+            .collect();
+        if scoped.is_empty() {
+            continue;
+        }
+
+        let first_support = parse_support_level(&scoped[0].support_level);
+        let mut strongest_support = first_support;
+        let mut weakest_support = first_support;
+        let mut min_score = scoped[0].score;
+        let mut max_score = scoped[0].score;
+        let mut stable_bucket_count = 0usize;
+
+        for item in &scoped {
+            let level = parse_support_level(&item.support_level);
+            if level == first_support {
+                stable_bucket_count += 1;
+            }
+            strongest_support = strongest_support.max(level);
+            weakest_support = weakest_support.min(level);
+            min_score = min_score.min(item.score);
+            max_score = max_score.max(item.score);
+        }
+
+        rows.push(CostSensitivitySummaryRow {
+            hypothesis_id: hypothesis.id.clone(),
+            statement: hypothesis.statement.clone(),
+            cost_bucket_count: scoped.len(),
+            stable_bucket_count,
+            strongest_support: strongest_support.as_str().to_string(),
+            weakest_support: weakest_support.as_str().to_string(),
+            score_spread: max_score - min_score,
+            summary: format!(
+                "共比较 {} 个成本桶，其中 {} 个桶保持与首个成本桶相同的支持等级",
+                scoped.len(),
+                stable_bucket_count
+            ),
+        });
+    }
+
+    rows
+}
+
+pub fn build_evidence_summary(
+    research: &ResearchConfig,
+    full_assessments: &[HypothesisAssessment],
+    in_sample_assessments: Option<&[HypothesisAssessment]>,
+    out_of_sample_assessments: Option<&[HypothesisAssessment]>,
+    walk_forward_summaries: &[WalkForwardSummaryRow],
+    cost_summaries: &[CostSensitivitySummaryRow],
+    data_start: Option<NaiveDate>,
+    data_end: Option<NaiveDate>,
+) -> Vec<EvidenceSummaryRow> {
+    let walk_map: BTreeMap<String, WalkForwardSummaryRow> = walk_forward_summaries
+        .iter()
+        .cloned()
+        .map(|item| (item.hypothesis_id.clone(), item))
+        .collect();
+    let cost_map: BTreeMap<String, CostSensitivitySummaryRow> = cost_summaries
+        .iter()
+        .cloned()
+        .map(|item| (item.hypothesis_id.clone(), item))
+        .collect();
+    let data_span_days = data_start
+        .zip(data_end)
+        .map(|(start, end)| (end - start).num_days())
+        .unwrap_or_default();
+
+    research
+        .hypotheses
+        .iter()
+        .map(|hypothesis| {
+            let full_level = find_support_level(full_assessments, &hypothesis.id)
+                .unwrap_or(SupportLevel::Inconclusive);
+            let in_sample_level =
+                in_sample_assessments.and_then(|items| find_support_level(items, &hypothesis.id));
+            let out_sample_level = out_of_sample_assessments
+                .and_then(|items| find_support_level(items, &hypothesis.id));
+            let walk_summary = walk_map.get(&hypothesis.id);
+            let cost_summary = cost_map.get(&hypothesis.id);
+
+            let mut confidence_score = support_confidence_points(Some(full_level), 25);
+            confidence_score += support_confidence_points(in_sample_level, 15);
+            confidence_score += support_confidence_points(out_sample_level, 25);
+
+            if let Some(summary) = walk_summary {
+                let walk_points = if summary.total_windows == 0 {
+                    0
+                } else {
+                    ((summary.supported_windows as f64 / summary.total_windows as f64) * 20.0).round() as i32
+                };
+                confidence_score += walk_points.saturating_sub((summary.rejected_windows as i32) * 4);
+            }
+
+            if let Some(summary) = cost_summary {
+                let mut cost_points = 0;
+                if summary.cost_bucket_count >= 2 {
+                    cost_points += 5;
+                }
+                if summary.stable_bucket_count == summary.cost_bucket_count {
+                    cost_points += 10;
+                } else if summary.stable_bucket_count + 1 >= summary.cost_bucket_count {
+                    cost_points += 6;
+                }
+                if parse_support_level(&summary.weakest_support) >= SupportLevel::PartiallySupported {
+                    cost_points += 5;
+                }
+                confidence_score += cost_points.min(15);
+            }
+
+            confidence_score = confidence_score.clamp(0, 100);
+            let confidence_level = match confidence_score {
+                80..=100 => "高",
+                60..=79 => "中",
+                40..=59 => "观察中",
+                _ => "低",
+            };
+
+            let mut failure_conditions = Vec::new();
+            if data_span_days < 365 * 3 {
+                failure_conditions.push("历史样本仍不足 3 年");
+            }
+            if !is_positive_support_option(out_sample_level) {
+                failure_conditions.push("样本外支持仍不足");
+            }
+            if let Some(summary) = walk_summary {
+                if summary.supported_windows < summary.total_windows {
+                    failure_conditions.push("walk-forward 窗口稳定性不足");
+                }
+            } else {
+                failure_conditions.push("尚未启用 walk-forward 验证");
+            }
+            if let Some(summary) = cost_summary {
+                if summary.cost_bucket_count < 2 {
+                    failure_conditions.push("成本敏感性覆盖不足");
+                } else if summary.stable_bucket_count < summary.cost_bucket_count {
+                    failure_conditions.push("结论对成本变化较敏感");
+                }
+            } else {
+                failure_conditions.push("尚未输出成本敏感性结果");
+            }
+            if !is_positive_support(full_level) {
+                failure_conditions.push("全样本支持也不够稳定");
+            }
+            if failure_conditions.is_empty() {
+                failure_conditions.push("当前未发现明显失效条件，但仍需持续监控");
+            }
+
+            let walk_supported_windows = walk_summary.map(|item| item.supported_windows).unwrap_or(0);
+            let walk_total_windows = walk_summary.map(|item| item.total_windows).unwrap_or(0);
+            let cost_bucket_count = cost_summary.map(|item| item.cost_bucket_count).unwrap_or(0);
+            let stable_cost_bucket_count = cost_summary.map(|item| item.stable_bucket_count).unwrap_or(0);
+
+            EvidenceSummaryRow {
+                hypothesis_id: hypothesis.id.clone(),
+                statement: hypothesis.statement.clone(),
+                full_sample_support: full_level.as_str().to_string(),
+                in_sample_support: in_sample_level
+                    .map(|level| level.as_str().to_string())
+                    .unwrap_or_else(|| "not_run".to_string()),
+                out_of_sample_support: out_sample_level
+                    .map(|level| level.as_str().to_string())
+                    .unwrap_or_else(|| "not_run".to_string()),
+                walk_forward_supported_windows: walk_supported_windows,
+                walk_forward_total_windows: walk_total_windows,
+                cost_bucket_count,
+                stable_cost_bucket_count,
+                confidence_score,
+                confidence_level: confidence_level.to_string(),
+                failure_condition: failure_conditions.join("；"),
+                rationale: format!(
+                    "全样本={}，样本内={}，样本外={}，walk-forward={}/{}, 成本稳定桶={}/{}",
+                    full_level.as_str(),
+                    in_sample_level
+                        .map(|level| level.as_str())
+                        .unwrap_or("not_run"),
+                    out_sample_level
+                        .map(|level| level.as_str())
+                        .unwrap_or("not_run"),
+                    walk_supported_windows,
+                    walk_total_windows,
+                    stable_cost_bucket_count,
+                    cost_bucket_count
+                ),
+            }
+        })
+        .collect()
+}
+
 pub fn assessments_to_rows(assessments: &[HypothesisAssessment]) -> Vec<HypothesisAssessmentRow> {
     assessments
         .iter()
@@ -506,6 +973,13 @@ pub fn render_research_plan(research: &ResearchConfig) -> String {
             lines.push(format!("样本内比例: {:.2}", in_sample_ratio));
         }
     }
+    if let Some(walk_cfg) = &research.walk_forward {
+        lines.push(format!("walk-forward 训练比例: {:.2}", walk_cfg.train_ratio));
+        lines.push(format!("walk-forward 测试比例: {:.2}", walk_cfg.test_ratio));
+        if let Some(max_windows) = walk_cfg.max_windows {
+            lines.push(format!("walk-forward 最大窗口数: {}", max_windows));
+        }
+    }
     if let Some(override_cfg) = &research.decision_override {
         lines.push(format!("人工覆写最终状态: {}", override_cfg.final_state));
         lines.push(format!("人工覆写原因: {}", override_cfg.reason));
@@ -528,6 +1002,7 @@ pub fn render_research_decision(
     full_assessments: &[HypothesisAssessment],
     in_sample_assessments: Option<&[HypothesisAssessment]>,
     out_of_sample_assessments: Option<&[HypothesisAssessment]>,
+    evidence_summaries: &[EvidenceSummaryRow],
 ) -> String {
     let mut lines = vec![
         format!("=== {} ===", title),
@@ -593,14 +1068,28 @@ pub fn render_research_decision(
             ));
         }
     }
+    if !evidence_summaries.is_empty() {
+        lines.push("证据摘要：".to_string());
+        for evidence in evidence_summaries {
+            lines.push(format!(
+                "- {}: 置信度={}({}), 主要失效条件={}",
+                evidence.hypothesis_id,
+                evidence.confidence_level,
+                evidence.confidence_score,
+                evidence.failure_condition
+            ));
+        }
+    }
 
     lines.join("\n") + "\n"
 }
 
 pub fn render_governance_summary(
     plan: Option<&SampleSplitPlan>,
+    walk_forward_windows: Option<&[WalkForwardWindowPlan]>,
     auto_decision: &ResearchDecision,
     final_decision: &ResearchDecision,
+    evidence_summaries: &[EvidenceSummaryRow],
 ) -> String {
     let mut lines = vec![
         "=== 治理摘要 ===".to_string(),
@@ -625,11 +1114,74 @@ pub fn render_governance_summary(
         lines.push("样本切分: 未启用".to_string());
     }
 
+    if let Some(windows) = walk_forward_windows {
+        lines.push(format!("walk-forward 窗口数: {}", windows.len()));
+    } else {
+        lines.push("walk-forward: 未启用".to_string());
+    }
+
     if let Some(reason) = &final_decision.override_reason {
         lines.push(format!("人工覆写原因: {}", reason));
     }
+    if !evidence_summaries.is_empty() {
+        lines.push("假设置信度概览：".to_string());
+        for evidence in evidence_summaries {
+            lines.push(format!(
+                "- {}: {}({}) | {}",
+                evidence.hypothesis_id,
+                evidence.confidence_level,
+                evidence.confidence_score,
+                evidence.failure_condition
+            ));
+        }
+    }
 
     lines.join("\n") + "\n"
+}
+
+fn unique_unit_costs(rows: &[BatchRowView]) -> Vec<f64> {
+    let mut values: Vec<f64> = rows.iter().map(|row| row.unit_cost).collect();
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    values.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+    values
+}
+
+fn find_support_level(assessments: &[HypothesisAssessment], hypothesis_id: &str) -> Option<SupportLevel> {
+    assessments
+        .iter()
+        .find(|item| item.hypothesis_id == hypothesis_id)
+        .map(|item| item.support_level)
+}
+
+fn parse_support_level(value: &str) -> SupportLevel {
+    match value {
+        "strongly_supported" => SupportLevel::StronglySupported,
+        "partially_supported" => SupportLevel::PartiallySupported,
+        "inconclusive" => SupportLevel::Inconclusive,
+        "not_supported" => SupportLevel::NotSupported,
+        _ => SupportLevel::Rejected,
+    }
+}
+
+fn is_positive_support(level: SupportLevel) -> bool {
+    matches!(
+        level,
+        SupportLevel::StronglySupported | SupportLevel::PartiallySupported
+    )
+}
+
+fn is_positive_support_option(level: Option<SupportLevel>) -> bool {
+    level.map(is_positive_support).unwrap_or(false)
+}
+
+fn support_confidence_points(level: Option<SupportLevel>, max_points: i32) -> i32 {
+    match level.unwrap_or(SupportLevel::Rejected) {
+        SupportLevel::StronglySupported => max_points,
+        SupportLevel::PartiallySupported => (max_points as f64 * 0.75).round() as i32,
+        SupportLevel::Inconclusive => (max_points as f64 * 0.4).round() as i32,
+        SupportLevel::NotSupported => (max_points as f64 * 0.15).round() as i32,
+        SupportLevel::Rejected => 0,
+    }
 }
 
 fn summarize_assessments(assessments: &[HypothesisAssessment]) -> AssessmentSummary {
@@ -652,4 +1204,92 @@ fn summarize_assessments(assessments: &[HypothesisAssessment]) -> AssessmentSumm
     }
 
     summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::WalkForwardConfig;
+    use chrono::Duration;
+
+    fn mock_dates(count: usize) -> Vec<NaiveDate> {
+        let start = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        (0..count)
+            .map(|offset| start + Duration::days(offset as i64))
+            .collect()
+    }
+
+    #[test]
+    fn walk_forward_windows_use_expanding_train_window() {
+        let cfg = WalkForwardConfig {
+            train_ratio: 0.5,
+            test_ratio: 0.25,
+            min_train_rows: None,
+            min_test_rows: None,
+            max_windows: Some(2),
+        };
+        let dates = mock_dates(260);
+
+        let windows = build_walk_forward_windows(&cfg, &dates).unwrap();
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].train_rows, 130);
+        assert_eq!(windows[0].test_rows, 65);
+        assert_eq!(windows[1].train_rows, 195);
+        assert_eq!(windows[1].test_rows, 65);
+    }
+
+    #[test]
+    fn evidence_summary_flags_short_history_and_missing_out_sample() {
+        let research = ResearchConfig {
+            topic: "topic".to_string(),
+            round: "round".to_string(),
+            objective: None,
+            sample_split: None,
+            walk_forward: None,
+            decision_override: None,
+            hypotheses: vec![HypothesisConfig {
+                id: "H1".to_string(),
+                statement: "statement".to_string(),
+                rule: "prefer_short_lookback".to_string(),
+                preferred_max_lookback: Some(20),
+                preferred_min_top_n: None,
+                preferred_min_rebalance_freq: None,
+                min_return_delta: None,
+            }],
+        };
+        let full = vec![HypothesisAssessment {
+            hypothesis_id: "H1".to_string(),
+            statement: "statement".to_string(),
+            rule: "prefer_short_lookback".to_string(),
+            preferred_group: "a".to_string(),
+            baseline_group: "b".to_string(),
+            preferred_count: 1,
+            baseline_count: 1,
+            preferred_avg_return: 0.02,
+            baseline_avg_return: 0.01,
+            preferred_avg_drawdown: -0.1,
+            baseline_avg_drawdown: -0.12,
+            preferred_avg_cost: 0.001,
+            baseline_avg_cost: 0.002,
+            score: 3,
+            support_level: SupportLevel::StronglySupported,
+            rationale: "ok".to_string(),
+        }];
+
+        let summary = build_evidence_summary(
+            &research,
+            &full,
+            None,
+            None,
+            &[],
+            &[],
+            NaiveDate::from_ymd_opt(2024, 1, 1),
+            NaiveDate::from_ymd_opt(2024, 12, 31),
+        );
+
+        assert_eq!(summary.len(), 1);
+        assert!(summary[0].failure_condition.contains("历史样本仍不足 3 年"));
+        assert!(summary[0].failure_condition.contains("样本外支持仍不足"));
+    }
 }

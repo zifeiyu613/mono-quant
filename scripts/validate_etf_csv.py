@@ -19,6 +19,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="校验 ETF CSV 文件")
@@ -27,8 +29,18 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def validate_one(path: Path) -> tuple[bool, list[str], list[str]]:
+def to_numeric_array(series) -> np.ndarray:
     import pandas as pd
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    return np.asarray(numeric, dtype=float)
+
+
+def validate_one(path: Path) -> tuple[bool, list[str], list[str]]:
+    try:
+        import pandas as pd
+    except Exception as e:
+        return False, [f"缺少 pandas 依赖：{e}"], []
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -48,7 +60,8 @@ def validate_one(path: Path) -> tuple[bool, list[str], list[str]]:
         errors.append("文件为空")
         return False, errors, warnings
 
-    if df[required].isnull().any().any():
+    required_values = df.loc[:, required]
+    if bool(required_values.isnull().to_numpy().any()):
         errors.append("必要字段存在空值")
 
     parsed_dates = pd.to_datetime(df["date"], format="%Y-%m-%d", errors="coerce")
@@ -61,16 +74,16 @@ def validate_one(path: Path) -> tuple[bool, list[str], list[str]]:
             errors.append("存在重复日期")
 
     for col in [c for c in ["open", "high", "low", "close"] if c in df.columns]:
-        numeric = pd.to_numeric(df[col], errors="coerce")
-        if numeric.isnull().any():
+        numeric = to_numeric_array(df[col])
+        if bool(np.isnan(numeric).any()):
             errors.append(f"字段 {col} 存在非数字值")
-        elif (numeric <= 0).any():
+        elif bool((numeric <= 0).any()):
             errors.append(f"字段 {col} 存在非正价格")
 
     if "high" in df.columns and "low" in df.columns:
-        hi = pd.to_numeric(df["high"], errors="coerce")
-        lo = pd.to_numeric(df["low"], errors="coerce")
-        if (hi < lo).any():
+        hi = to_numeric_array(df["high"])
+        lo = to_numeric_array(df["low"])
+        if bool((hi < lo).any()):
             errors.append("存在 high < low 的记录")
 
     return len(errors) == 0, errors, warnings

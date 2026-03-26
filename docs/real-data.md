@@ -1,4 +1,4 @@
-# 真实数据接入说明（Tushare ETF 日线）
+# 真实数据接入说明（免费 ETF 日线）
 
 当前项目已经支持：
 - **真实 ETF 日线下载**
@@ -6,6 +6,8 @@
 - **本地 CSV 校验**
 - **processed 层构建（对齐、标准化、稳定回测输入）**
 - **processed 层摘要输出（summary + manifest）**
+
+当前默认数据源已经切到免费 `AkShare`，底层使用东方财富 ETF 历史行情接口。
 
 ---
 
@@ -15,7 +17,7 @@
 
 ### `data/raw/`
 表示：
-- 从 Tushare 拉下来的原始数据
+- 从上游数据源拉下来的原始数据
 - 尽量保留原始字段
 - 用于留档与重新处理
 
@@ -47,25 +49,29 @@ python3 -m venv .venv
 pip install -r scripts/requirements.txt
 ```
 
-### 第二步：设置 Tushare Token
-```bash
-export TUSHARE_TOKEN=你的token
-```
+### 第二步：确认起始日期
+P0 默认建议至少从 `2020-01-01` 开始拉数据，当前 `scripts/fetch_config.json` 已经把 `start_date` 设为 `20200101`。
 
 ### 第三步：首次全量拉取
 ```bash
-python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json --full
+python scripts/fetch_etf_daily.py --config scripts/fetch_config.json --full
 ```
 
 ### 第四步：之后增量更新
 ```bash
-python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json
+python scripts/fetch_etf_daily.py --config scripts/fetch_config.json
 ```
 
 ### 第五步：校验 raw 层
 ```bash
 . .venv/bin/activate
 python scripts/validate_etf_csv.py --dir data/raw
+```
+
+如果你要先验证校验脚本本身：
+```bash
+. .venv/bin/activate
+python -m unittest scripts/test_validate_etf_csv.py
 ```
 
 ### 第六步：构建 processed 层
@@ -115,7 +121,7 @@ data/processed/
 - `data/processed/processed_summary.txt`
 
 ### raw 层规范化命名
-抓取脚本会把 Tushare 代码映射成稳定文件名，当前默认是：
+抓取脚本会把 ETF 代码映射成稳定文件名，当前默认是：
 - `510300.SH` -> `data/raw/hs300.csv`
 - `510500.SH` -> `data/raw/zz500.csv`
 - `159915.SZ` -> `data/raw/cyb.csv`
@@ -147,6 +153,9 @@ data/processed/
 - `alignment_manifest.json`
 - `processed_summary.json`
 - `processed_summary.txt`
+
+进入 P1 后，如果回测触发了最小风控，还会在对应输出目录额外生成：
+- `risk_events.csv`
 
 然后会在日志里打印 processed 摘要前几行。
 
@@ -203,6 +212,10 @@ cargo run -- --config configs/momentum_batch.json
 - 异常样本统计
 - 数据准备时间戳追踪
 
+另外要注意：
+- 如果你只拉 1 年左右的数据，研究治理里的置信度会明确把“历史样本不足 3 年”标成主要失效条件
+- walk-forward 和样本外评估不是自动“证明策略有效”，它们只是让你更早发现结论是否只在单一时间窗里成立
+
 ---
 
 ## 九、下一步最值得做
@@ -211,3 +224,14 @@ cargo run -- --config configs/momentum_batch.json
 2. processed 层异常报告
 3. Rust 输出中自动记录本次数据批次
 4. 单资产策略也支持 processed-first 模式
+
+如果你准备进入 P0 研究阶段，更推荐的工作流是：
+```bash
+./scripts/prepare_data.sh scripts/fetch_config.json
+cargo run -- --config configs/momentum_batch.json
+```
+
+然后重点查看这些文件：
+- `output/.../walk_forward_assessment_summary.csv`
+- `output/.../cost_sensitivity_summary.csv`
+- `output/.../research_evidence_summary.csv`

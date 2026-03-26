@@ -11,11 +11,14 @@
 - 输出 `holdings_trace.csv`
 - 输出 `asset_contribution.csv`
 - 输出批量实验总表、实验索引、阶段报告
-- 支持 Tushare ETF 日线真实数据下载
+- 支持免费 ETF 日线真实数据下载（默认 `AkShare`）
 - 支持增量更新与基础数据校验
 - 支持 processed 层构建（共同日期对齐 + 标准化输出）
 - 支持 processed 层摘要输出（summary + manifest）
 - 多资产回测默认优先读取 `data/processed/`
+- 支持 walk-forward 多窗口样本外评估
+- 支持成本敏感性摘要与假设证据置信度输出
+- 支持最小风控：样本门槛、单资产权重上限、最大回撤停机、调仓换手上限
 
 ## 快速开始
 
@@ -31,10 +34,12 @@ pip install -r scripts/requirements.txt
 cargo run -- --config configs/ma_single.json
 ```
 
-### 2. 准备真实数据（推荐）
+### 2. 准备真实数据（推荐先拉多年历史）
 ```bash
 ./scripts/prepare_data.sh scripts/fetch_config.json
 ```
+
+> 当前默认 `scripts/fetch_config.json` 已把 `start_date` 调整为 `20200101`，用于满足 P0 阶段“多年份样本”要求。
 
 ### 3. 多 ETF 动量轮动（processed-first）
 ```bash
@@ -51,16 +56,26 @@ cargo run -- --config configs/momentum_batch.json
 - `hypothesis_assessment.csv`
 - `hypothesis_assessment_in_sample.csv`
 - `hypothesis_assessment_out_of_sample.csv`
+- `walk_forward_plan.txt`
+- `walk_forward_assessment_detail.csv`
+- `walk_forward_assessment_summary.csv`
+- `cost_sensitivity_detail.csv`
+- `cost_sensitivity_summary.csv`
+- `research_evidence_summary.csv`
 - `research_plan.txt`
 - `research_decision_auto.txt`
 - `research_decision.txt`
 - `governance_summary.txt`
 - 更新后的 `stage_report.txt`
+- `risk_events.csv`（触发风控时）
 
 适合用来记录：
 - 当前研究主题
 - 本轮研究假设
 - 样本内 / 样本外假设支持度评估
+- 多窗口样本外一致性
+- 成本变化下的结论稳定性
+- 每个假设的置信度与主要失效条件
 - 自动研究状态与人工最终决策
 - 当前研究状态与下一步建议
 
@@ -77,24 +92,26 @@ python3 -m venv .venv
 pip install -r scripts/requirements.txt
 ```
 
-设置 token：
-```bash
-export TUSHARE_TOKEN=你的token
-```
+当前默认数据源为免费 `AkShare`，无需 token。
 
 ### 全量拉取 raw 数据
 ```bash
-python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json --full
+python scripts/fetch_etf_daily.py --config scripts/fetch_config.json --full
 ```
 
 ### 增量更新 raw 数据
 ```bash
-python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json
+python scripts/fetch_etf_daily.py --config scripts/fetch_config.json
 ```
 
 ### 校验 raw 数据
 ```bash
 python scripts/validate_etf_csv.py --dir data/raw
+```
+
+### 校验脚本自测
+```bash
+python -m unittest scripts/test_validate_etf_csv.py
 ```
 
 ### 构建 processed 层
@@ -111,7 +128,7 @@ python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 > `processed_summary.json` 或 `processed_summary.txt`，
 > 先运行上面的 `prepare_data.sh`。
 
-> Tushare 原始文件会按规范化名称落到 `data/raw/`，当前默认是：
+> 原始文件会按规范化名称落到 `data/raw/`，当前默认是：
 > `hs300.csv`、`zz500.csv`、`cyb.csv`、`dividend.csv`。
 > 单资产默认配置也应优先使用这些规范化文件名。
 

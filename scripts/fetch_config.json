@@ -1,12 +1,12 @@
 {
-  "provider": "tushare",
   "symbols": [
     "510300.SH",
     "510500.SH",
     "159915.SZ",
     "510880.SH"
   ],
-  "start_date": "20240101",
+  "start_date": "20200101",
   "end_date": null,
+  "adjust": "hfq",
   "output_dir": "data/raw"
 }
