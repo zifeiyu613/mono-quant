@@ -19,6 +19,13 @@
 
 ## 快速开始
 
+### 0. 安装 Python 依赖（推荐使用本地 `.venv`）
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r scripts/requirements.txt
+```
+
 ### 1. 单 ETF 双均线
 ```bash
 cargo run -- --config configs/ma_single.json
@@ -40,8 +47,10 @@ cargo run -- --config configs/momentum_batch.json
 ```
 
 ## 真实数据工作流
-安装依赖：
+安装依赖（推荐在本地 `.venv` 中执行）：
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -r scripts/requirements.txt
 ```
 
@@ -78,6 +87,10 @@ python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 > 如果多资产回测提示缺少 `data/processed/*.csv`、`alignment_manifest.json`、
 > `processed_summary.json` 或 `processed_summary.txt`，
 > 先运行上面的 `prepare_data.sh`。
+
+> Tushare 原始文件会按规范化名称落到 `data/raw/`，当前默认是：
+> `hs300.csv`、`zz500.csv`、`cyb.csv`、`dividend.csv`。
+> 单资产默认配置也应优先使用这些规范化文件名。
 
 更多说明见：
 - `docs/real-data.md`

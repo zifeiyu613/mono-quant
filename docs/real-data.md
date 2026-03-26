@@ -42,6 +42,8 @@
 
 ### 第一步：安装依赖
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -r scripts/requirements.txt
 ```
 
@@ -62,11 +64,13 @@ python scripts/fetch_tushare_etf_daily.py --config scripts/fetch_config.json
 
 ### 第五步：校验 raw 层
 ```bash
+. .venv/bin/activate
 python scripts/validate_etf_csv.py --dir data/raw
 ```
 
 ### 第六步：构建 processed 层
 ```bash
+. .venv/bin/activate
 python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 ```
 
@@ -109,6 +113,13 @@ data/processed/
 - `data/processed/alignment_manifest.json`
 - `data/processed/processed_summary.json`
 - `data/processed/processed_summary.txt`
+
+### raw 层规范化命名
+抓取脚本会把 Tushare 代码映射成稳定文件名，当前默认是：
+- `510300.SH` -> `data/raw/hs300.csv`
+- `510500.SH` -> `data/raw/zz500.csv`
+- `159915.SZ` -> `data/raw/cyb.csv`
+- `510880.SH` -> `data/raw/dividend.csv`
 
 ### `alignment_manifest.json` 作用
 它会记录：

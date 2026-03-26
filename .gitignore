@@ -1,9 +1,31 @@
 /target/
+
+# macOS
 .DS_Store
+
+# Environment files
 .env
+.env.*
+
+# Python
 .venv/
+venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDEs
+.idea/
+.vscode/
+
+# Runtime artifacts
+*.log
 output/
+
+# Local market data artifacts
 data/raw/
 data/processed/
