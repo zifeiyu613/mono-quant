@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Deserialize, Clone)]
 pub struct Bar {
     pub date: NaiveDate,
+    #[allow(dead_code)]
     pub open: f64,
     pub close: f64,
 }

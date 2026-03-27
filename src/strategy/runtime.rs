@@ -1,10 +1,12 @@
 use crate::config::{AppConfig, RiskConfig};
 use crate::data::Bar;
 use crate::engine::backtest::{
-    required_asset_count_for_max_weight, run_absolute_momentum_breadth_backtest,
+    effective_selected_count, RotationBacktestConfig,
+    run_absolute_momentum_breadth_backtest,
     run_absolute_momentum_single_backtest, run_breakout_rotation_topn_backtest,
     run_breakout_timing_single_backtest,
     run_buy_hold_equal_weight_backtest, run_buy_hold_single_backtest, run_dual_momentum_backtest,
+    run_low_volatility_topn_backtest, run_ma_rotation_topn_backtest,
     run_ma_timing_single_backtest, run_momentum_topn_backtest, run_risk_off_rotation_backtest,
     run_relative_strength_pair_backtest, run_reversal_bottomn_backtest,
     run_volatility_adjusted_momentum_backtest, MomentumTopNResult,
@@ -14,7 +16,9 @@ use crate::strategy::absolute_momentum_single::select_absolute_momentum_single;
 use crate::strategy::breakout_rotation_topn::select_breakout_rotation_topn;
 use crate::strategy::breakout_timing_single::select_breakout_timing_single;
 use crate::strategy::dual_momentum::select_dual_momentum_assets;
+use crate::strategy::low_volatility_topn::rank_assets_by_low_volatility;
 use crate::strategy::ma_timing_single::select_ma_timing_single;
+use crate::strategy::ma_rotation_topn::rank_assets_by_ma_rotation;
 use crate::strategy::momentum_topn::rank_assets_by_lookback;
 use crate::strategy::relative_strength_pair::select_relative_strength_pair;
 use crate::strategy::risk_off_rotation::select_risk_off_rotation_asset;
@@ -35,6 +39,12 @@ pub enum RotationStrategySpec {
         lookback: usize,
         rebalance_freq: usize,
         top_n: usize,
+    },
+    LowVolatilityTopN {
+        lookback: usize,
+        rebalance_freq: usize,
+        top_n: usize,
+        defensive_asset: Option<String>,
     },
     ReversalBottomN {
         lookback: usize,
@@ -79,6 +89,14 @@ pub enum RotationStrategySpec {
         rebalance_freq: usize,
         defensive_asset: Option<String>,
     },
+    MaRotationTopN {
+        fast: usize,
+        slow: usize,
+        lookback: usize,
+        rebalance_freq: usize,
+        top_n: usize,
+        defensive_asset: Option<String>,
+    },
     BreakoutTimingSingle {
         benchmark_asset: String,
         lookback: usize,
@@ -97,6 +115,27 @@ pub enum RotationStrategySpec {
         lookback: usize,
         rebalance_freq: usize,
     },
+}
+
+pub fn is_processed_rotation_strategy(strategy: &str) -> bool {
+    matches!(
+        strategy,
+        "buy_hold_single"
+            | "buy_hold_equal_weight"
+            | "absolute_momentum_breadth"
+            | "absolute_momentum_single"
+            | "low_volatility_topn"
+            | "volatility_adjusted_momentum"
+            | "reversal_bottomn"
+            | "momentum_topn"
+            | "dual_momentum"
+            | "risk_off_rotation"
+            | "ma_timing_single"
+            | "ma_rotation_topn"
+            | "breakout_rotation_topn"
+            | "relative_strength_pair"
+            | "breakout_timing_single"
+    )
 }
 
 impl RotationStrategySpec {
@@ -138,6 +177,27 @@ impl RotationStrategySpec {
                     cfg.top_n
                         .ok_or_else(|| anyhow!("volatility_adjusted_momentum 需要提供 top_n"))?,
                 )?,
+            }),
+            "low_volatility_topn" => Ok(Self::LowVolatilityTopN {
+                lookback: require_positive_usize(
+                    "low_volatility_topn",
+                    "lookback",
+                    cfg.lookback
+                        .ok_or_else(|| anyhow!("low_volatility_topn 需要提供 lookback"))?,
+                )?,
+                rebalance_freq: require_positive_usize(
+                    "low_volatility_topn",
+                    "rebalance_freq",
+                    cfg.rebalance_freq
+                        .ok_or_else(|| anyhow!("low_volatility_topn 需要提供 rebalance_freq"))?,
+                )?,
+                top_n: require_positive_usize(
+                    "low_volatility_topn",
+                    "top_n",
+                    cfg.top_n
+                        .ok_or_else(|| anyhow!("low_volatility_topn 需要提供 top_n"))?,
+                )?,
+                defensive_asset: cfg.defensive_asset.clone(),
             }),
             "reversal_bottomn" => Ok(Self::ReversalBottomN {
                 lookback: require_positive_usize(
@@ -293,6 +353,44 @@ impl RotationStrategySpec {
                     defensive_asset: cfg.defensive_asset.clone(),
                 })
             }
+            "ma_rotation_topn" => {
+                let fast = require_positive_usize(
+                    "ma_rotation_topn",
+                    "fast",
+                    cfg.fast.ok_or_else(|| anyhow!("ma_rotation_topn 需要提供 fast"))?,
+                )?;
+                let slow = require_positive_usize(
+                    "ma_rotation_topn",
+                    "slow",
+                    cfg.slow.ok_or_else(|| anyhow!("ma_rotation_topn 需要提供 slow"))?,
+                )?;
+                if fast >= slow {
+                    return Err(anyhow!("ma_rotation_topn 要求 fast < slow"));
+                }
+                Ok(Self::MaRotationTopN {
+                    fast,
+                    slow,
+                    lookback: require_positive_usize(
+                        "ma_rotation_topn",
+                        "lookback",
+                        cfg.lookback
+                            .ok_or_else(|| anyhow!("ma_rotation_topn 需要提供 lookback"))?,
+                    )?,
+                    rebalance_freq: require_positive_usize(
+                        "ma_rotation_topn",
+                        "rebalance_freq",
+                        cfg.rebalance_freq
+                            .ok_or_else(|| anyhow!("ma_rotation_topn 需要提供 rebalance_freq"))?,
+                    )?,
+                    top_n: require_positive_usize(
+                        "ma_rotation_topn",
+                        "top_n",
+                        cfg.top_n
+                            .ok_or_else(|| anyhow!("ma_rotation_topn 需要提供 top_n"))?,
+                    )?,
+                    defensive_asset: cfg.defensive_asset.clone(),
+                })
+            }
             "breakout_timing_single" => Ok(Self::BreakoutTimingSingle {
                 benchmark_asset: cfg
                     .benchmark_asset
@@ -364,6 +462,7 @@ impl RotationStrategySpec {
         match self {
             Self::MomentumTopN { lookback, .. } => *lookback,
             Self::VolatilityAdjustedMomentum { lookback, .. } => *lookback,
+            Self::LowVolatilityTopN { lookback, .. } => *lookback,
             Self::ReversalBottomN { lookback, .. } => *lookback,
             Self::BuyHoldSingle { .. } => 0,
             Self::BuyHoldEqualWeight => 0,
@@ -372,6 +471,7 @@ impl RotationStrategySpec {
             Self::DualMomentum { lookback, .. } => *lookback,
             Self::RiskOffRotation { lookback, .. } => *lookback,
             Self::MaTimingSingle { slow, .. } => slow.saturating_sub(1),
+            Self::MaRotationTopN { slow, lookback, .. } => slow.saturating_sub(1).max(*lookback),
             Self::BreakoutTimingSingle { lookback, .. } => *lookback,
             Self::BreakoutRotationTopN { lookback, .. } => *lookback,
             Self::RelativeStrengthPair { lookback, .. } => *lookback,
@@ -382,6 +482,7 @@ impl RotationStrategySpec {
         match self {
             Self::MomentumTopN { .. } => "动量轮动摘要",
             Self::VolatilityAdjustedMomentum { .. } => "波动调整动量摘要",
+            Self::LowVolatilityTopN { .. } => "低波动 TopN 摘要",
             Self::ReversalBottomN { .. } => "反转 BottomN 摘要",
             Self::BuyHoldSingle { .. } => "Buy & Hold 单资产摘要",
             Self::BuyHoldEqualWeight => "Buy & Hold 等权摘要",
@@ -390,6 +491,7 @@ impl RotationStrategySpec {
             Self::DualMomentum { .. } => "双动量摘要",
             Self::RiskOffRotation { .. } => "风险开关轮动摘要",
             Self::MaTimingSingle { .. } => "单资产均线择时摘要",
+            Self::MaRotationTopN { .. } => "均线过滤 TopN 摘要",
             Self::BreakoutTimingSingle { .. } => "单资产突破择时摘要",
             Self::BreakoutRotationTopN { .. } => "多资产突破轮动摘要",
             Self::RelativeStrengthPair { .. } => "双资产相对强弱切换摘要",
@@ -416,6 +518,23 @@ impl RotationStrategySpec {
                 ("rebalance_freq".to_string(), rebalance_freq.to_string()),
                 ("top_n".to_string(), top_n.to_string()),
                 ("ranking_mode".to_string(), "return_over_volatility".to_string()),
+            ],
+            Self::LowVolatilityTopN {
+                lookback,
+                rebalance_freq,
+                top_n,
+                defensive_asset,
+            } => vec![
+                ("lookback".to_string(), lookback.to_string()),
+                ("rebalance_freq".to_string(), rebalance_freq.to_string()),
+                ("top_n".to_string(), top_n.to_string()),
+                (
+                    "defensive_asset".to_string(),
+                    defensive_asset
+                        .clone()
+                        .unwrap_or_else(|| "未配置".to_string()),
+                ),
+                ("ranking_mode".to_string(), "lowest_volatility".to_string()),
             ],
             Self::ReversalBottomN {
                 lookback,
@@ -529,6 +648,27 @@ impl RotationStrategySpec {
                         .unwrap_or_else(|| "空仓".to_string()),
                 ),
             ],
+            Self::MaRotationTopN {
+                fast,
+                slow,
+                lookback,
+                rebalance_freq,
+                top_n,
+                defensive_asset,
+            } => vec![
+                ("fast".to_string(), fast.to_string()),
+                ("slow".to_string(), slow.to_string()),
+                ("lookback".to_string(), lookback.to_string()),
+                ("rebalance_freq".to_string(), rebalance_freq.to_string()),
+                ("top_n".to_string(), top_n.to_string()),
+                (
+                    "defensive_asset".to_string(),
+                    defensive_asset
+                        .clone()
+                        .unwrap_or_else(|| "空仓".to_string()),
+                ),
+                ("selection_mode".to_string(), "ma_filter_then_topn".to_string()),
+            ],
             Self::BreakoutTimingSingle {
                 benchmark_asset,
                 lookback,
@@ -583,12 +723,20 @@ impl RotationStrategySpec {
                 defensive_asset: Some(defensive_asset),
                 ..
             } => vec![defensive_asset.as_str()],
+            Self::LowVolatilityTopN {
+                defensive_asset: Some(defensive_asset),
+                ..
+            } => vec![defensive_asset.as_str()],
             Self::RelativeStrengthPair {
                 benchmark_asset,
                 defensive_asset,
                 ..
             } => vec![benchmark_asset.as_str(), defensive_asset.as_str()],
             Self::BreakoutRotationTopN {
+                defensive_asset: Some(defensive_asset),
+                ..
+            } => vec![defensive_asset.as_str()],
+            Self::MaRotationTopN {
                 defensive_asset: Some(defensive_asset),
                 ..
             } => vec![defensive_asset.as_str()],
@@ -643,6 +791,14 @@ impl RotationStrategySpec {
         slippage: f64,
         risk: Option<&RiskConfig>,
     ) -> MomentumTopNResult {
+        let make_cfg = |lookback: usize, rebalance_freq: usize| RotationBacktestConfig {
+            lookback,
+            rebalance_freq,
+            commission,
+            slippage,
+            risk,
+        };
+
         match self {
             Self::MomentumTopN {
                 lookback,
@@ -669,6 +825,17 @@ impl RotationStrategySpec {
                 commission,
                 slippage,
                 risk,
+            ),
+            Self::LowVolatilityTopN {
+                lookback,
+                rebalance_freq,
+                top_n,
+                defensive_asset,
+            } => run_low_volatility_topn_backtest(
+                asset_maps,
+                make_cfg(*lookback, *rebalance_freq),
+                *top_n,
+                defensive_asset.as_deref(),
             ),
             Self::ReversalBottomN {
                 lookback,
@@ -700,13 +867,9 @@ impl RotationStrategySpec {
                 defensive_asset,
             } => run_absolute_momentum_breadth_backtest(
                 asset_maps,
-                *lookback,
-                *rebalance_freq,
+                make_cfg(*lookback, *rebalance_freq),
                 *absolute_momentum_floor,
                 defensive_asset.as_deref(),
-                commission,
-                slippage,
-                risk,
             ),
             Self::AbsoluteMomentumSingle {
                 benchmark_asset,
@@ -716,14 +879,10 @@ impl RotationStrategySpec {
                 defensive_asset,
             } => run_absolute_momentum_single_backtest(
                 asset_maps,
+                make_cfg(*lookback, *rebalance_freq),
                 benchmark_asset,
-                *lookback,
-                *rebalance_freq,
                 *absolute_momentum_floor,
                 defensive_asset.as_deref(),
-                commission,
-                slippage,
-                risk,
             ),
             Self::DualMomentum {
                 lookback,
@@ -733,14 +892,10 @@ impl RotationStrategySpec {
                 defensive_asset,
             } => run_dual_momentum_backtest(
                 asset_maps,
-                *lookback,
-                *rebalance_freq,
+                make_cfg(*lookback, *rebalance_freq),
                 *top_n,
                 *absolute_momentum_floor,
                 defensive_asset.as_deref(),
-                commission,
-                slippage,
-                risk,
             ),
             Self::RiskOffRotation {
                 lookback,
@@ -750,14 +905,10 @@ impl RotationStrategySpec {
                 defensive_asset,
             } => run_risk_off_rotation_backtest(
                 asset_maps,
-                *lookback,
-                *rebalance_freq,
+                make_cfg(*lookback, *rebalance_freq),
                 risk_assets,
                 *absolute_momentum_floor,
                 defensive_asset,
-                commission,
-                slippage,
-                risk,
             ),
             Self::MaTimingSingle {
                 benchmark_asset,
@@ -767,14 +918,26 @@ impl RotationStrategySpec {
                 defensive_asset,
             } => run_ma_timing_single_backtest(
                 asset_maps,
+                make_cfg(slow.saturating_sub(1), *rebalance_freq),
                 benchmark_asset,
                 *fast,
                 *slow,
-                *rebalance_freq,
                 defensive_asset.as_deref(),
-                commission,
-                slippage,
-                risk,
+            ),
+            Self::MaRotationTopN {
+                fast,
+                slow,
+                lookback,
+                rebalance_freq,
+                top_n,
+                defensive_asset,
+            } => run_ma_rotation_topn_backtest(
+                asset_maps,
+                make_cfg(*lookback, *rebalance_freq),
+                *fast,
+                *slow,
+                *top_n,
+                defensive_asset.as_deref(),
             ),
             Self::BreakoutTimingSingle {
                 benchmark_asset,
@@ -783,13 +946,9 @@ impl RotationStrategySpec {
                 defensive_asset,
             } => run_breakout_timing_single_backtest(
                 asset_maps,
+                make_cfg(*lookback, *rebalance_freq),
                 benchmark_asset,
-                *lookback,
-                *rebalance_freq,
                 defensive_asset.as_deref(),
-                commission,
-                slippage,
-                risk,
             ),
             Self::BreakoutRotationTopN {
                 lookback,
@@ -798,13 +957,9 @@ impl RotationStrategySpec {
                 defensive_asset,
             } => run_breakout_rotation_topn_backtest(
                 asset_maps,
-                *lookback,
-                *rebalance_freq,
+                make_cfg(*lookback, *rebalance_freq),
                 *top_n,
                 defensive_asset.as_deref(),
-                commission,
-                slippage,
-                risk,
             ),
             Self::RelativeStrengthPair {
                 benchmark_asset,
@@ -813,13 +968,9 @@ impl RotationStrategySpec {
                 rebalance_freq,
             } => run_relative_strength_pair_backtest(
                 asset_maps,
+                make_cfg(*lookback, *rebalance_freq),
                 benchmark_asset,
                 defensive_asset,
-                *lookback,
-                *rebalance_freq,
-                commission,
-                slippage,
-                risk,
             ),
         }
     }
@@ -832,6 +983,11 @@ impl RotationStrategySpec {
                 ..
             }
             | Self::VolatilityAdjustedMomentum {
+                lookback,
+                rebalance_freq,
+                ..
+            }
+            | Self::LowVolatilityTopN {
                 lookback,
                 rebalance_freq,
                 ..
@@ -860,30 +1016,48 @@ impl RotationStrategySpec {
                 lookback,
                 rebalance_freq,
                 ..
-            } => index >= *lookback && (index - *lookback) % *rebalance_freq == 0,
+            } => {
+                index >= *lookback && (index - *lookback).is_multiple_of(*rebalance_freq)
+            }
             Self::MaTimingSingle {
                 slow,
                 rebalance_freq,
                 ..
             } => {
                 let lookback = slow.saturating_sub(1);
-                index >= lookback && (index - lookback) % *rebalance_freq == 0
+                index >= lookback && (index - lookback).is_multiple_of(*rebalance_freq)
+            }
+            Self::MaRotationTopN {
+                slow,
+                lookback,
+                rebalance_freq,
+                ..
+            } => {
+                let required_lookback = slow.saturating_sub(1).max(*lookback);
+                index >= required_lookback
+                    && (index - required_lookback).is_multiple_of(*rebalance_freq)
             }
             Self::BreakoutTimingSingle {
                 lookback,
                 rebalance_freq,
                 ..
-            } => index >= *lookback && (index - *lookback) % *rebalance_freq == 0,
+            } => {
+                index >= *lookback && (index - *lookback).is_multiple_of(*rebalance_freq)
+            }
             Self::BreakoutRotationTopN {
                 lookback,
                 rebalance_freq,
                 ..
-            } => index >= *lookback && (index - *lookback) % *rebalance_freq == 0,
+            } => {
+                index >= *lookback && (index - *lookback).is_multiple_of(*rebalance_freq)
+            }
             Self::RelativeStrengthPair {
                 lookback,
                 rebalance_freq,
                 ..
-            } => index >= *lookback && (index - *lookback) % *rebalance_freq == 0,
+            } => {
+                index >= *lookback && (index - *lookback).is_multiple_of(*rebalance_freq)
+            }
             Self::BuyHoldSingle { .. } | Self::BuyHoldEqualWeight => false,
         }
     }
@@ -912,6 +1086,26 @@ impl RotationStrategySpec {
             } => {
                 let ranking =
                     rank_assets_by_volatility_adjusted_momentum(asset_maps, dates, index, *lookback);
+                let selected_count = effective_selected_count(*top_n, ranking.len(), risk);
+                ranking
+                    .into_iter()
+                    .take(selected_count)
+                    .map(|item| item.0)
+                    .collect()
+            }
+            Self::LowVolatilityTopN {
+                lookback,
+                top_n,
+                defensive_asset,
+                ..
+            } => {
+                let ranking = rank_assets_by_low_volatility(
+                    asset_maps,
+                    dates,
+                    index,
+                    *lookback,
+                    defensive_asset.as_deref(),
+                );
                 let selected_count = effective_selected_count(*top_n, ranking.len(), risk);
                 ranking
                     .into_iter()
@@ -1009,6 +1203,30 @@ impl RotationStrategySpec {
                 benchmark_asset,
                 defensive_asset.as_deref(),
             ),
+            Self::MaRotationTopN {
+                fast,
+                slow,
+                lookback,
+                top_n,
+                defensive_asset,
+                ..
+            } => {
+                let ranking = rank_assets_by_ma_rotation(
+                    asset_maps,
+                    dates,
+                    index,
+                    *fast,
+                    *slow,
+                    *lookback,
+                    defensive_asset.as_deref(),
+                );
+                let selected_count = effective_selected_count(*top_n, ranking.len(), risk);
+                ranking
+                    .into_iter()
+                    .take(selected_count)
+                    .map(|item| item.0)
+                    .collect()
+            }
             Self::BreakoutTimingSingle {
                 benchmark_asset,
                 lookback,
@@ -1059,25 +1277,9 @@ fn require_positive_usize(strategy: &str, field: &str, value: usize) -> Result<u
     Ok(value)
 }
 
-fn effective_selected_count(
-    requested_top_n: usize,
-    available_assets: usize,
-    risk: Option<&RiskConfig>,
-) -> usize {
-    if available_assets == 0 {
-        return 0;
-    }
-    if let Some(max_weight) = risk.and_then(|cfg| cfg.max_single_asset_weight) {
-        let required_assets = required_asset_count_for_max_weight(max_weight);
-        requested_top_n.max(required_assets).min(available_assets)
-    } else {
-        requested_top_n.min(available_assets)
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::RotationStrategySpec;
+    use super::{is_processed_rotation_strategy, RotationStrategySpec};
     use crate::config::AppConfig;
 
     #[test]
@@ -1163,5 +1365,13 @@ mod tests {
 
         let err = RotationStrategySpec::from_app_config(&cfg).unwrap_err();
         assert!(err.to_string().contains("fast < slow"));
+    }
+
+    #[test]
+    fn processed_rotation_strategy_whitelist_is_explicit() {
+        assert!(is_processed_rotation_strategy("momentum_topn"));
+        assert!(is_processed_rotation_strategy("breakout_timing_single"));
+        assert!(!is_processed_rotation_strategy("ma_single"));
+        assert!(!is_processed_rotation_strategy("strategy_compare"));
     }
 }

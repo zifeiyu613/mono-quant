@@ -1,0 +1,6 @@
+{
+  "experiment_name": "daily_signal_ma_rotation_topn_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/ma_rotation_topn.json",
+  "output_dir": "output/daily_signal_ma_rotation_topn_v1"
+}

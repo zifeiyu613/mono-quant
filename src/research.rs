@@ -170,6 +170,17 @@ pub struct EvidenceSummaryRow {
     pub rationale: String,
 }
 
+#[derive(Clone, Copy)]
+pub struct EvidenceSummaryInput<'a> {
+    pub full_assessments: &'a [HypothesisAssessment],
+    pub in_sample_assessments: Option<&'a [HypothesisAssessment]>,
+    pub out_of_sample_assessments: Option<&'a [HypothesisAssessment]>,
+    pub walk_forward_summaries: &'a [WalkForwardSummaryRow],
+    pub cost_summaries: &'a [CostSensitivitySummaryRow],
+    pub data_start: Option<NaiveDate>,
+    pub data_end: Option<NaiveDate>,
+}
+
 #[derive(Debug, Clone)]
 struct AssessmentSummary {
     strong: usize,
@@ -786,26 +797,23 @@ pub fn summarize_cost_sensitivity(
 
 pub fn build_evidence_summary(
     research: &ResearchConfig,
-    full_assessments: &[HypothesisAssessment],
-    in_sample_assessments: Option<&[HypothesisAssessment]>,
-    out_of_sample_assessments: Option<&[HypothesisAssessment]>,
-    walk_forward_summaries: &[WalkForwardSummaryRow],
-    cost_summaries: &[CostSensitivitySummaryRow],
-    data_start: Option<NaiveDate>,
-    data_end: Option<NaiveDate>,
+    input: EvidenceSummaryInput<'_>,
 ) -> Vec<EvidenceSummaryRow> {
-    let walk_map: BTreeMap<String, WalkForwardSummaryRow> = walk_forward_summaries
+    let walk_map: BTreeMap<String, WalkForwardSummaryRow> = input
+        .walk_forward_summaries
         .iter()
         .cloned()
         .map(|item| (item.hypothesis_id.clone(), item))
         .collect();
-    let cost_map: BTreeMap<String, CostSensitivitySummaryRow> = cost_summaries
+    let cost_map: BTreeMap<String, CostSensitivitySummaryRow> = input
+        .cost_summaries
         .iter()
         .cloned()
         .map(|item| (item.hypothesis_id.clone(), item))
         .collect();
-    let data_span_days = data_start
-        .zip(data_end)
+    let data_span_days = input
+        .data_start
+        .zip(input.data_end)
         .map(|(start, end)| (end - start).num_days())
         .unwrap_or_default();
 
@@ -813,11 +821,13 @@ pub fn build_evidence_summary(
         .hypotheses
         .iter()
         .map(|hypothesis| {
-            let full_level = find_support_level(full_assessments, &hypothesis.id)
+            let full_level = find_support_level(input.full_assessments, &hypothesis.id)
                 .unwrap_or(SupportLevel::Inconclusive);
-            let in_sample_level =
-                in_sample_assessments.and_then(|items| find_support_level(items, &hypothesis.id));
-            let out_sample_level = out_of_sample_assessments
+            let in_sample_level = input
+                .in_sample_assessments
+                .and_then(|items| find_support_level(items, &hypothesis.id));
+            let out_sample_level = input
+                .out_of_sample_assessments
                 .and_then(|items| find_support_level(items, &hypothesis.id));
             let walk_summary = walk_map.get(&hypothesis.id);
             let cost_summary = cost_map.get(&hypothesis.id);
@@ -1279,13 +1289,15 @@ mod tests {
 
         let summary = build_evidence_summary(
             &research,
-            &full,
-            None,
-            None,
-            &[],
-            &[],
-            NaiveDate::from_ymd_opt(2024, 1, 1),
-            NaiveDate::from_ymd_opt(2024, 12, 31),
+            EvidenceSummaryInput {
+                full_assessments: &full,
+                in_sample_assessments: None,
+                out_of_sample_assessments: None,
+                walk_forward_summaries: &[],
+                cost_summaries: &[],
+                data_start: NaiveDate::from_ymd_opt(2024, 1, 1),
+                data_end: NaiveDate::from_ymd_opt(2024, 12, 31),
+            },
         );
 
         assert_eq!(summary.len(), 1);

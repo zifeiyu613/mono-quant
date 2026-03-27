@@ -86,42 +86,52 @@ cargo run -- --config configs/absolute_momentum_single.json
 cargo run -- --config configs/volatility_adjusted_momentum.json
 ```
 
-### 10. 风险开关轮动策略（processed-first）
+### 10. 低波动 TopN（processed-first）
+```bash
+cargo run -- --config configs/low_volatility_topn.json
+```
+
+### 11. 风险开关轮动策略（processed-first）
 ```bash
 cargo run -- --config configs/risk_off_rotation.json
 ```
 
-### 11. 多资产绝对动量广度（processed-first）
+### 12. 多资产绝对动量广度（processed-first）
 ```bash
 cargo run -- --config configs/absolute_momentum_breadth.json
 ```
 
-### 12. 反转 BottomN 对照策略（processed-first）
+### 13. 反转 BottomN 对照策略（processed-first）
 ```bash
 cargo run -- --config configs/reversal_bottomn.json
 ```
 
-### 13. 单资产均线择时（processed-first）
+### 14. 单资产均线择时（processed-first）
 ```bash
 cargo run -- --config configs/ma_timing_single.json
 ```
 
-### 14. 双资产相对强弱切换（processed-first）
+### 15. 均线过滤 TopN（processed-first）
+```bash
+cargo run -- --config configs/ma_rotation_topn.json
+```
+
+### 16. 双资产相对强弱切换（processed-first）
 ```bash
 cargo run -- --config configs/relative_strength_pair.json
 ```
 
-### 15. 多资产突破轮动（processed-first）
+### 17. 多资产突破轮动（processed-first）
 ```bash
 cargo run -- --config configs/breakout_rotation_topn.json
 ```
 
-### 16. 单资产突破择时（processed-first）
+### 18. 单资产突破择时（processed-first）
 ```bash
 cargo run -- --config configs/breakout_timing_single.json
 ```
 
-### 17. 跨策略统一对比（单一 comparison.csv）
+### 19. 跨策略统一对比（单一 comparison.csv）
 ```bash
 cargo run -- --config configs/strategy_compare_core.json
 ```
@@ -140,7 +150,7 @@ cargo run -- --config configs/strategy_compare_core.json
 cargo run -- --config configs/strategy_compare_extended.json
 ```
 
-### 18. 每日信号输出（P1）
+### 20. 每日信号输出（P1）
 ```bash
 cargo run -- --config configs/daily_signal_dual_momentum.json
 ```
@@ -163,12 +173,14 @@ cargo run -- --config configs/daily_signal_dual_momentum.json
   - `buy_hold_equal_weight`
   - `absolute_momentum_breadth`
   - `absolute_momentum_single`
+  - `low_volatility_topn`
   - `volatility_adjusted_momentum`
   - `reversal_bottomn`
   - `momentum_topn`
   - `dual_momentum`
   - `risk_off_rotation`
   - `ma_timing_single`
+  - `ma_rotation_topn`
   - `relative_strength_pair`
   - `breakout_rotation_topn`
   - `breakout_timing_single`
@@ -199,16 +211,18 @@ cargo run -- --config configs/daily_signal_dual_momentum.json
 - `configs/daily_signal_dual_momentum_override.json`
 - `configs/daily_signal_absolute_momentum_breadth.json`
 - `configs/daily_signal_absolute_momentum_single.json`
+- `configs/daily_signal_low_volatility_topn.json`
 - `configs/daily_signal_volatility_adjusted_momentum.json`
 - `configs/daily_signal_reversal_bottomn.json`
 - `configs/daily_signal_momentum_topn.json`
 - `configs/daily_signal_risk_off_rotation.json`
 - `configs/daily_signal_ma_timing_single.json`
+- `configs/daily_signal_ma_rotation_topn.json`
 - `configs/daily_signal_relative_strength_pair.json`
 - `configs/daily_signal_breakout_rotation_topn.json`
 - `configs/daily_signal_breakout_timing_single.json`
 
-### 19. 批量研究治理输出
+### 21. 批量研究治理输出
 `momentum_batch` 现在支持可选的研究治理配置，会在批量实验完成后额外输出：
 - `hypothesis_assessment.csv`
 - `hypothesis_assessment_in_sample.csv`
@@ -242,6 +256,27 @@ cargo run -- --config configs/daily_signal_dual_momentum.json
 ```bash
 cargo run -- --config configs/momentum_batch_review.json
 ```
+
+## 轻量性能基准
+可用内置脚本快速评估回测主流程耗时（适合比较优化前后变化）：
+
+```bash
+./scripts/benchmark_backtest.sh --config configs/ma_rotation_topn.json --runs 5 --warmup 1 --profile release
+```
+
+常用变体：
+```bash
+# 复用已有二进制，减少重复构建时间
+./scripts/benchmark_backtest.sh --config configs/momentum_topn.json --runs 10 --warmup 2 --skip-build
+
+# 指定结果输出文件
+./scripts/benchmark_backtest.sh --config configs/low_volatility_topn.json --output output/benchmarks/lowvol_bench.json
+```
+
+默认会写入 `output/benchmarks/<config>_<profile>_<timestamp>.json`，包含：
+- `raw_ms`
+- `mean_ms` / `median_ms` / `p95_ms`
+- `min_ms` / `max_ms` / `stdev_ms`
 
 ## 真实数据工作流
 安装依赖（推荐在本地 `.venv` 中执行）：

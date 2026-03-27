@@ -281,9 +281,11 @@
 - 已支持通过 `execution_input` 做执行回写并生成 `actual_positions.csv`
 - 已新增 `absolute_momentum_single`
 - 已新增 `absolute_momentum_breadth`
+- 已新增 `low_volatility_topn`
 - 已新增 `volatility_adjusted_momentum`
 - 已新增 `reversal_bottomn`
 - 已新增 `ma_timing_single`
+- 已新增 `ma_rotation_topn`
 - 已新增 `relative_strength_pair`
 - 已新增 `breakout_rotation_topn`
 - 已新增 `breakout_timing_single`
@@ -331,22 +333,43 @@
 
 按现在项目状态，最合理的下一步开发顺序是：
 
-1. 先补 `buy_hold_single`
-2. 再补 `buy_hold_equal_weight`
-3. 再补 `dual_momentum`
-4. 再补 `risk_off_rotation`
-5. 然后开始做运行模式输出
+1. 继续扩策略池，但优先补“与当前一线候选差异足够大”的策略
+2. 把 `absolute_momentum_breadth`、`volatility_adjusted_momentum`、`dual_momentum` 放在同一梯队继续对照
+3. 把 `breakout_timing_single` 和 `breakout_rotation_topn` 保留为低复杂度 / 低换手运行对照
+4. 对降级策略继续保留研究地位，但暂不前推到运行层
+5. 在第六批开始前，把待实现候选池文档化并固定下来
 
 这条路线的原因是：
 
-- 能最快扩出策略池
-- 能最快建立对照组
-- 能最快看出当前 ETF 池到底适合哪类策略
-- 能最快逼近“实际运行”而不是继续停留在研究层
+- 能继续扩策略池，但避免重复堆相似策略
+- 能让下一批开发有明确候选，不再临时拍脑袋
+- 能更快分清“主候选 / 对照组 / 降级研究池”
+- 能继续朝“实际运行前筛选”而不是单纯堆策略前进
 
 ---
 
-## 八、这份计划对应的开发策略
+## 八、待实现策略池
+
+下面这些策略已经列入待实现池，当前**尚未落地**：
+
+1. `defensive_pair_rotation`
+   - 防守资产内部轮动
+2. `adaptive_dual_momentum`
+   - 动态 `top_n` / 动态门槛版双动量
+3. `breakdown_timing_single`
+   - 向下跌破退出型单资产择时
+4. `volatility_target_rotation`
+   - 简单波动目标控制的轮动版本
+
+这些策略之所以保留在待实现池，是因为：
+
+- 它们和当前已实现策略的差异足够明确
+- 不需要改动底层数据结构就能接入
+- 更适合继续扩展“策略矩阵”，而不是重复同一逻辑
+
+---
+
+## 九、这份计划对应的开发策略
 
 从这份文档开始，后续开发默认按下面的优先级执行：
 

@@ -1,0 +1,6 @@
+{
+  "experiment_name": "daily_signal_low_volatility_topn_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/low_volatility_topn.json",
+  "output_dir": "output/daily_signal_low_volatility_topn_v1"
+}
