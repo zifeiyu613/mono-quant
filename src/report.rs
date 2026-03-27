@@ -134,8 +134,8 @@ pub fn ensure_output_dir(path: &str) -> anyhow::Result<()> {
 
 /// 将任意可序列化行数组写入 CSV 文件。
 pub fn write_csv_rows<T: Serialize>(path: &str, rows: &[T]) -> anyhow::Result<()> {
-    let mut wtr = csv::Writer::from_path(path)
-        .with_context(|| format!("创建 CSV 文件失败：{}", path))?;
+    let mut wtr =
+        csv::Writer::from_path(path).with_context(|| format!("创建 CSV 文件失败：{}", path))?;
     for row in rows {
         wtr.serialize(row)?;
     }
@@ -145,8 +145,8 @@ pub fn write_csv_rows<T: Serialize>(path: &str, rows: &[T]) -> anyhow::Result<()
 
 /// 从 CSV 读取任意反序列化行数组。
 pub fn read_csv_rows<T: DeserializeOwned>(path: &str) -> anyhow::Result<Vec<T>> {
-    let mut rdr = csv::Reader::from_path(path)
-        .with_context(|| format!("打开 CSV 文件失败：{}", path))?;
+    let mut rdr =
+        csv::Reader::from_path(path).with_context(|| format!("打开 CSV 文件失败：{}", path))?;
     let mut rows = Vec::new();
     for result in rdr.deserialize() {
         let row: T = result.with_context(|| format!("解析 CSV 行失败：{}", path))?;

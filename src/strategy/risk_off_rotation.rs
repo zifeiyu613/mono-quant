@@ -108,4 +108,3 @@ mod tests {
         assert_eq!(selected, vec!["dividend".to_string()]);
     }
 }
-

@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::strategy::runtime::is_processed_rotation_strategy;
 
 pub(super) fn run_daily_signal(
     daily_cfg: &config::AppConfig,
@@ -65,8 +66,10 @@ pub(super) fn run_daily_signal(
 
     let signal_date = *ctx.dates.last().unwrap();
     let signal_index = ctx.dates.len() - 1;
-    let current_weights =
-        with_cash_weight(&snapshot_weights_for_date(&result.holdings_trace, signal_date));
+    let current_weights = with_cash_weight(&snapshot_weights_for_date(
+        &result.holdings_trace,
+        signal_date,
+    ));
     let rebalance_due = source_strategy_spec.is_rebalance_due(signal_index);
     let mut signal_note = if result.summary.halted_by_risk {
         result
@@ -254,7 +257,10 @@ pub(super) fn run_daily_signal(
         daily_cfg.output_dir,
         daily_cfg.output_dir,
     );
-    write_diagnostics(&format!("{}/signal_summary.txt", daily_cfg.output_dir), &summary)?;
+    write_diagnostics(
+        &format!("{}/signal_summary.txt", daily_cfg.output_dir),
+        &summary,
+    )?;
 
     println!("=== 每日信号摘要 ===");
     println!("来源策略：{}", source_cfg.strategy);
@@ -264,11 +270,20 @@ pub(super) fn run_daily_signal(
     println!("目标仓位：{}", target_positions_text);
     println!("信号说明：{}", decision.final_note);
     println!("已写入：{}/signal_summary.txt", daily_cfg.output_dir);
-    println!("已写入：{}/model_target_positions.csv", daily_cfg.output_dir);
+    println!(
+        "已写入：{}/model_target_positions.csv",
+        daily_cfg.output_dir
+    );
     println!("已写入：{}/target_positions.csv", daily_cfg.output_dir);
-    println!("已写入：{}/rebalance_instructions.csv", daily_cfg.output_dir);
+    println!(
+        "已写入：{}/rebalance_instructions.csv",
+        daily_cfg.output_dir
+    );
     println!("已写入：{}/execution_log.csv", daily_cfg.output_dir);
-    println!("已写入：{}/manual_override_summary.txt", daily_cfg.output_dir);
+    println!(
+        "已写入：{}/manual_override_summary.txt",
+        daily_cfg.output_dir
+    );
     println!("已写入：{}/execution_summary.txt", daily_cfg.output_dir);
     if execution_backfill.actual_weights.is_some() {
         println!("已写入：{}/actual_positions.csv", daily_cfg.output_dir);

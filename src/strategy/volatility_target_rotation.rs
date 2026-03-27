@@ -110,7 +110,11 @@ pub fn select_volatility_target_rotation_assets(
         return Vec::new();
     }
 
-    let mut selected: Vec<String> = ranking.into_iter().take(risk_count).map(|item| item.0).collect();
+    let mut selected: Vec<String> = ranking
+        .into_iter()
+        .take(risk_count)
+        .map(|item| item.0)
+        .collect();
     if let Some(defensive) = defensive_asset {
         if has_defensive && !selected.iter().any(|name| name == defensive) {
             selected.push(defensive.to_string());
@@ -245,9 +249,6 @@ mod tests {
             Some("dividend"),
         );
 
-        assert_eq!(
-            selected,
-            vec!["a".to_string(), "dividend".to_string()]
-        );
+        assert_eq!(selected, vec!["a".to_string(), "dividend".to_string()]);
     }
 }

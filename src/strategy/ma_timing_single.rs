@@ -117,8 +117,7 @@ mod tests {
             .collect(),
         );
 
-        let selected =
-            select_ma_timing_single(&maps, &dates, 3, 2, 3, "hs300", Some("dividend"));
+        let selected = select_ma_timing_single(&maps, &dates, 3, 2, 3, "hs300", Some("dividend"));
 
         assert_eq!(selected, vec!["dividend".to_string()]);
     }

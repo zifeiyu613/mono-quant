@@ -109,9 +109,9 @@ fn default_strategy() -> String {
 
 /// 读取并解析 JSON 配置文件，返回强类型的 `AppConfig`。
 pub fn load_config(path: &str) -> anyhow::Result<AppConfig> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("读取配置文件失败：{}", path))?;
-    let cfg: AppConfig = serde_json::from_str(&content)
-        .with_context(|| format!("解析 JSON 配置失败：{}", path))?;
+    let content =
+        fs::read_to_string(path).with_context(|| format!("读取配置文件失败：{}", path))?;
+    let cfg: AppConfig =
+        serde_json::from_str(&content).with_context(|| format!("解析 JSON 配置失败：{}", path))?;
     Ok(cfg)
 }

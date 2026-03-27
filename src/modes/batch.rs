@@ -1,9 +1,6 @@
 use super::super::*;
 
-pub(super) fn run_momentum_batch(
-    cfg: &config::AppConfig,
-    config_path: &str,
-) -> anyhow::Result<()> {
+pub(super) fn run_momentum_batch(cfg: &config::AppConfig, config_path: &str) -> anyhow::Result<()> {
     let asset_files = cfg
         .asset_files
         .clone()
@@ -29,16 +26,25 @@ pub(super) fn run_momentum_batch(
     log_info("正在校验 momentum_batch 的 processed 输入");
     validate_processed_inputs(&asset_files)?;
     if let Some(manifest_path) = infer_manifest_path(&asset_files) {
-        log_info(&format!("使用 processed 对齐清单：{}", manifest_path.display()));
+        log_info(&format!(
+            "使用 processed 对齐清单：{}",
+            manifest_path.display()
+        ));
     }
     if let Some(summary_json_path) = infer_summary_json_path(&asset_files) {
-        log_info(&format!("使用 processed 摘要 JSON：{}", summary_json_path.display()));
+        log_info(&format!(
+            "使用 processed 摘要 JSON：{}",
+            summary_json_path.display()
+        ));
     }
     log_processed_summary(&asset_files)?;
 
     ensure_output_dir(&cfg.output_dir)?;
     fs::create_dir_all(format!("{}/experiments", cfg.output_dir))?;
-    fs::copy(config_path, format!("{}/config_snapshot.json", cfg.output_dir))?;
+    fs::copy(
+        config_path,
+        format!("{}/config_snapshot.json", cfg.output_dir),
+    )?;
     log_info("正在加载批量实验所需的多资产数据");
 
     let mut asset_maps = HashMap::new();
@@ -46,7 +52,8 @@ pub(super) fn run_momentum_batch(
         log_info(&format!("正在加载资产 {}：{}", name, path));
         asset_maps.insert(
             name.clone(),
-            data::read_bars_map(path).with_context(|| format!("读取资产 {} 失败：{}", name, path))?,
+            data::read_bars_map(path)
+                .with_context(|| format!("读取资产 {} 失败：{}", name, path))?,
         );
     }
     let aligned_dates = data::intersect_dates(&asset_maps);
@@ -71,11 +78,15 @@ pub(super) fn run_momentum_batch(
         .and_then(|research_cfg| research_cfg.walk_forward.as_ref())
         .map(|walk_cfg| build_walk_forward_windows(walk_cfg, &aligned_dates))
         .transpose()?;
-    let in_sample_asset_maps = sample_split_plan
-        .as_ref()
-        .map(|plan| data::filter_asset_maps_by_date_range(&asset_maps, plan.in_sample_start, plan.in_sample_end));
+    let in_sample_asset_maps = sample_split_plan.as_ref().map(|plan| {
+        data::filter_asset_maps_by_date_range(&asset_maps, plan.in_sample_start, plan.in_sample_end)
+    });
     let out_sample_asset_maps = sample_split_plan.as_ref().map(|plan| {
-        data::filter_asset_maps_by_date_range(&asset_maps, plan.out_sample_start, plan.out_sample_end)
+        data::filter_asset_maps_by_date_range(
+            &asset_maps,
+            plan.out_sample_start,
+            plan.out_sample_end,
+        )
     });
 
     let mut rows: Vec<BatchResultRow> = Vec::new();
@@ -119,14 +130,23 @@ pub(super) fn run_momentum_batch(
                         })
                         .collect();
                     write_equity_curve(&format!("{}/equity_curve.csv", exp_dir), &equity_rows)?;
-                    write_rebalance_log(&format!("{}/rebalance_log.csv", exp_dir), &result.rebalances)?;
-                    write_holdings_trace(&format!("{}/holdings_trace.csv", exp_dir), &result.holdings_trace)?;
+                    write_rebalance_log(
+                        &format!("{}/rebalance_log.csv", exp_dir),
+                        &result.rebalances,
+                    )?;
+                    write_holdings_trace(
+                        &format!("{}/holdings_trace.csv", exp_dir),
+                        &result.holdings_trace,
+                    )?;
                     write_contributions(
                         &format!("{}/asset_contribution.csv", exp_dir),
                         &result.contributions,
                     )?;
                     if !result.risk_events.is_empty() {
-                        write_csv_rows(&format!("{}/risk_events.csv", exp_dir), &result.risk_events)?;
+                        write_csv_rows(
+                            &format!("{}/risk_events.csv", exp_dir),
+                            &result.risk_events,
+                        )?;
                     }
                     let top_contributor = result
                         .top_contributor
@@ -200,7 +220,11 @@ pub(super) fn run_momentum_batch(
                                 unit_cost / 2.0,
                                 cfg.risk.as_ref(),
                             );
-                            push_batch_result_row(&mut out_sample_rows, &batch_spec, &scoped_result);
+                            push_batch_result_row(
+                                &mut out_sample_rows,
+                                &batch_spec,
+                                &scoped_result,
+                            );
                         }
                     }
 
@@ -243,7 +267,8 @@ pub(super) fn run_momentum_batch(
                         total_cost_paid: result.summary.total_cost_paid,
                         final_equity: result.summary.final_equity,
                         halted_by_risk: result.summary.halted_by_risk,
-                        halt_event_type: last_stop_event_type(&result.risk_events).unwrap_or_default(),
+                        halt_event_type: last_stop_event_type(&result.risk_events)
+                            .unwrap_or_default(),
                         halt_reason: result.summary.halt_reason.clone().unwrap_or_default(),
                         top_contributor,
                         worst_contributor,
@@ -260,7 +285,10 @@ pub(super) fn run_momentum_batch(
     in_sample_rows.sort_by(|a, b| b.total_return.partial_cmp(&a.total_return).unwrap());
     out_sample_rows.sort_by(|a, b| b.total_return.partial_cmp(&a.total_return).unwrap());
     write_batch_results_csv(&format!("{}/batch_results.csv", cfg.output_dir), &rows)?;
-    write_experiment_index(&format!("{}/experiment_index.csv", cfg.output_dir), &index_rows)?;
+    write_experiment_index(
+        &format!("{}/experiment_index.csv", cfg.output_dir),
+        &index_rows,
+    )?;
     if sample_split_plan.is_some() {
         write_batch_results_csv(
             &format!("{}/batch_results_in_sample.csv", cfg.output_dir),
@@ -305,7 +333,10 @@ pub(super) fn run_momentum_batch(
         let full_assessments = assess_hypotheses(research_cfg, &full_row_views);
         let full_assessment_rows = assessments_to_rows(&full_assessments);
         let in_sample_assessments = if sample_split_plan.is_some() {
-            Some(assess_hypotheses(research_cfg, &to_batch_row_views(&in_sample_rows)))
+            Some(assess_hypotheses(
+                research_cfg,
+                &to_batch_row_views(&in_sample_rows),
+            ))
         } else {
             None
         };
@@ -473,7 +504,10 @@ pub(super) fn run_momentum_batch(
     let stage_report = if let Some(research_cfg) = &cfg.research {
         let full_assessments = assess_hypotheses(research_cfg, &to_batch_row_views(&rows));
         let in_sample_assessments = if sample_split_plan.is_some() {
-            Some(assess_hypotheses(research_cfg, &to_batch_row_views(&in_sample_rows)))
+            Some(assess_hypotheses(
+                research_cfg,
+                &to_batch_row_views(&in_sample_rows),
+            ))
         } else {
             None
         };
@@ -511,7 +545,10 @@ pub(super) fn run_momentum_batch(
             cfg.experiment_name,
         )
     };
-    write_diagnostics(&format!("{}/stage_report.txt", cfg.output_dir), &stage_report)?;
+    write_diagnostics(
+        &format!("{}/stage_report.txt", cfg.output_dir),
+        &stage_report,
+    )?;
 
     println!("=== 批量实验摘要 ===");
     println!("实验数量：{}", rows.len());

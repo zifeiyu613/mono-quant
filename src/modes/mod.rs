@@ -4,10 +4,7 @@ mod batch;
 mod compare;
 mod daily_signal;
 
-pub(super) fn run_momentum_batch(
-    cfg: &config::AppConfig,
-    config_path: &str,
-) -> anyhow::Result<()> {
+pub(super) fn run_momentum_batch(cfg: &config::AppConfig, config_path: &str) -> anyhow::Result<()> {
     batch::run_momentum_batch(cfg, config_path)
 }
 

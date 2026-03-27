@@ -1,23 +1,24 @@
 mod config;
 mod data;
 mod engine;
+mod entry_dispatch;
 mod metrics;
 mod modes;
-mod research;
 mod report;
+mod research;
 mod strategy;
 
 use anyhow::{anyhow, Context};
 use chrono::NaiveDate;
 use config::load_config;
 use report::{
-    ensure_output_dir, read_csv_rows, write_contributions, write_diagnostics, write_equity_curve,
-    write_csv_rows, write_experiment_index, write_holdings_trace, write_hypothesis_assessments,
+    ensure_output_dir, read_csv_rows, write_contributions, write_csv_rows, write_diagnostics,
+    write_equity_curve, write_experiment_index, write_holdings_trace, write_hypothesis_assessments,
     write_rebalance_log, EquityRow, ExecutionLogRow, ExperimentIndexRow, RebalanceInstructionRow,
     TargetPositionRow,
 };
 use research::{
-    apply_manual_override, assessments_to_rows, assess_hypotheses, build_evidence_summary,
+    apply_manual_override, assess_hypotheses, assessments_to_rows, build_evidence_summary,
     build_sample_split_plan, build_walk_forward_windows, cost_sensitivity_detail_rows,
     decide_research_state, render_governance_summary, render_research_decision,
     render_research_plan, render_walk_forward_plan, summarize_cost_sensitivity,
@@ -25,12 +26,12 @@ use research::{
     EvidenceSummaryInput,
 };
 use serde::Serialize;
-use strategy::runtime::{is_processed_rotation_strategy, RotationStrategySpec};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use strategy::runtime::RotationStrategySpec;
 
 #[derive(Debug, Serialize)]
 struct BatchResultRow {
@@ -172,11 +173,7 @@ fn push_batch_result_row(
         final_equity: result.summary.final_equity,
         halted_by_risk: result.summary.halted_by_risk,
         halt_event_type: last_stop_event_type(&result.risk_events).unwrap_or_default(),
-        halt_reason: result
-            .summary
-            .halt_reason
-            .clone()
-            .unwrap_or_default(),
+        halt_reason: result.summary.halt_reason.clone().unwrap_or_default(),
         top_contributor,
         worst_contributor,
         output_dir: spec.exp_dir.to_string(),
@@ -336,7 +333,8 @@ fn parse_config_path() -> anyhow::Result<String> {
 fn infer_manifest_path(asset_files: &HashMap<String, String>) -> Option<PathBuf> {
     asset_files.values().next().and_then(|path| {
         let p = Path::new(path);
-        p.parent().map(|parent| parent.join("alignment_manifest.json"))
+        p.parent()
+            .map(|parent| parent.join("alignment_manifest.json"))
     })
 }
 
@@ -344,7 +342,8 @@ fn infer_manifest_path(asset_files: &HashMap<String, String>) -> Option<PathBuf>
 fn infer_summary_json_path(asset_files: &HashMap<String, String>) -> Option<PathBuf> {
     asset_files.values().next().and_then(|path| {
         let p = Path::new(path);
-        p.parent().map(|parent| parent.join("processed_summary.json"))
+        p.parent()
+            .map(|parent| parent.join("processed_summary.json"))
     })
 }
 
@@ -352,7 +351,8 @@ fn infer_summary_json_path(asset_files: &HashMap<String, String>) -> Option<Path
 fn infer_summary_txt_path(asset_files: &HashMap<String, String>) -> Option<PathBuf> {
     asset_files.values().next().and_then(|path| {
         let p = Path::new(path);
-        p.parent().map(|parent| parent.join("processed_summary.txt"))
+        p.parent()
+            .map(|parent| parent.join("processed_summary.txt"))
     })
 }
 
@@ -448,10 +448,16 @@ fn load_processed_strategy_context(
     validate_processed_inputs(&asset_files)?;
     if emit_logs {
         if let Some(manifest_path) = infer_manifest_path(&asset_files) {
-            log_info(&format!("使用 processed 对齐清单：{}", manifest_path.display()));
+            log_info(&format!(
+                "使用 processed 对齐清单：{}",
+                manifest_path.display()
+            ));
         }
         if let Some(summary_json_path) = infer_summary_json_path(&asset_files) {
-            log_info(&format!("使用 processed 摘要 JSON：{}", summary_json_path.display()));
+            log_info(&format!(
+                "使用 processed 摘要 JSON：{}",
+                summary_json_path.display()
+            ));
         }
         log_processed_summary(&asset_files)?;
         log_info(&format!("正在加载 {} 的多资产数据", cfg.strategy));
@@ -464,7 +470,8 @@ fn load_processed_strategy_context(
         }
         asset_maps.insert(
             name.clone(),
-            data::read_bars_map(path).with_context(|| format!("读取资产 {} 失败：{}", name, path))?,
+            data::read_bars_map(path)
+                .with_context(|| format!("读取资产 {} 失败：{}", name, path))?,
         );
     }
 
@@ -544,7 +551,9 @@ fn format_weight_map(weights: &HashMap<String, f64>) -> String {
         .join(", ")
 }
 
-fn normalize_target_weights(weights: &HashMap<String, f64>) -> anyhow::Result<HashMap<String, f64>> {
+fn normalize_target_weights(
+    weights: &HashMap<String, f64>,
+) -> anyhow::Result<HashMap<String, f64>> {
     let mut cleaned = HashMap::new();
     let mut total_weight = 0.0;
 
@@ -837,7 +846,10 @@ fn merge_execution_backfill(
 
     let mut merged = Vec::new();
     for expected in expected_rows {
-        let key = format!("{}|{}|{}", expected.signal_date, expected.asset, expected.action);
+        let key = format!(
+            "{}|{}|{}",
+            expected.signal_date, expected.asset, expected.action
+        );
         let imported = imported_map.get(&key).ok_or_else(|| {
             anyhow!(
                 "execution_input 缺少对应执行行：{}，文件：{}",
@@ -861,7 +873,9 @@ fn merge_execution_backfill(
     Ok(merged)
 }
 
-fn actual_weights_from_execution_rows(rows: &[ExecutionLogRow]) -> anyhow::Result<HashMap<String, f64>> {
+fn actual_weights_from_execution_rows(
+    rows: &[ExecutionLogRow],
+) -> anyhow::Result<HashMap<String, f64>> {
     let mut raw_weights = HashMap::new();
     for row in rows {
         let status = row.execution_status.trim().to_lowercase();
@@ -965,12 +979,15 @@ fn build_execution_backfill_result(
         });
     };
 
-    let imported_rows: Vec<ExecutionLogRow> = read_csv_rows(
-        execution_input_path.to_str().ok_or_else(|| {
-            anyhow!("execution_input 路径不是有效 UTF-8：{}", execution_input_path.display())
-        })?,
-    )?;
-    let merged_rows = merge_execution_backfill(template_rows, &imported_rows, execution_input_path)?;
+    let imported_rows: Vec<ExecutionLogRow> =
+        read_csv_rows(execution_input_path.to_str().ok_or_else(|| {
+            anyhow!(
+                "execution_input 路径不是有效 UTF-8：{}",
+                execution_input_path.display()
+            )
+        })?)?;
+    let merged_rows =
+        merge_execution_backfill(template_rows, &imported_rows, execution_input_path)?;
     let actual_weights = actual_weights_from_execution_rows(&merged_rows)?;
     let summary = render_execution_summary(
         signal_date,
@@ -1015,15 +1032,27 @@ fn run_processed_rotation_strategy(
             equity: *e,
         })
         .collect();
-    write_equity_curve(&format!("{}/equity_curve.csv", cfg.output_dir), &equity_rows)?;
-    write_rebalance_log(&format!("{}/rebalance_log.csv", cfg.output_dir), &result.rebalances)?;
-    write_holdings_trace(&format!("{}/holdings_trace.csv", cfg.output_dir), &result.holdings_trace)?;
+    write_equity_curve(
+        &format!("{}/equity_curve.csv", cfg.output_dir),
+        &equity_rows,
+    )?;
+    write_rebalance_log(
+        &format!("{}/rebalance_log.csv", cfg.output_dir),
+        &result.rebalances,
+    )?;
+    write_holdings_trace(
+        &format!("{}/holdings_trace.csv", cfg.output_dir),
+        &result.holdings_trace,
+    )?;
     write_contributions(
         &format!("{}/asset_contribution.csv", cfg.output_dir),
         &result.contributions,
     )?;
     if !result.risk_events.is_empty() {
-        write_csv_rows(&format!("{}/risk_events.csv", cfg.output_dir), &result.risk_events)?;
+        write_csv_rows(
+            &format!("{}/risk_events.csv", cfg.output_dir),
+            &result.risk_events,
+        )?;
     }
     write_diagnostics(
         &format!("{}/risk_summary.txt", cfg.output_dir),
@@ -1095,7 +1124,10 @@ fn run_processed_rotation_strategy(
         total_cost_paid: result.summary.total_cost_paid,
         final_equity: result.summary.final_equity,
         halted_by_risk: result.summary.halted_by_risk,
-        halt_reason: result.summary.halt_reason.unwrap_or_else(|| "未触发".to_string()),
+        halt_reason: result
+            .summary
+            .halt_reason
+            .unwrap_or_else(|| "未触发".to_string()),
         top_contributor: result
             .top_contributor
             .clone()
@@ -1131,103 +1163,7 @@ fn main() -> anyhow::Result<()> {
     let config_path = parse_config_path()?;
     log_info(&format!("正在加载配置：{}", config_path));
     let cfg = load_config(&config_path)?;
-
-    println!("实验名称：{}", cfg.experiment_name);
-    println!("策略类型：{}", cfg.strategy);
-
-    match cfg.strategy.as_str() {
-        "ma_single" => {
-            ensure_output_dir(&cfg.output_dir)?;
-            let data_file = cfg
-                .data_file
-                .clone()
-                .ok_or_else(|| anyhow!("ma_single 需要提供 data_file"))?;
-            let fast = cfg.fast.ok_or_else(|| anyhow!("ma_single 需要提供 fast"))?;
-            let slow = cfg.slow.ok_or_else(|| anyhow!("ma_single 需要提供 slow"))?;
-            let commission = cfg
-                .commission
-                .ok_or_else(|| anyhow!("ma_single 需要提供 commission"))?;
-            let slippage = cfg
-                .slippage
-                .ok_or_else(|| anyhow!("ma_single 需要提供 slippage"))?;
-            let stamp_tax_sell = cfg.stamp_tax_sell.unwrap_or(0.0);
-
-            log_info(&format!("正在读取单资产数据：{}", data_file));
-            let bars = data::read_bars(&data_file)?;
-            if bars.len() <= slow {
-                return Err(anyhow!(
-                    "K 线数量不足：当前 {} 行，至少需要大于 slow 窗口 {}",
-                    bars.len(),
-                    slow
-                ));
-            }
-
-            println!(
-                "数据区间：{} -> {}（共 {} 根K线）",
-                bars.first().unwrap().date,
-                bars.last().unwrap().date,
-                bars.len()
-            );
-            let signals = strategy::ma_cross::generate_signals(&bars, fast, slow);
-            let (summary, curve) =
-                engine::backtest::run_ma_backtest(&bars, &signals, commission, slippage, stamp_tax_sell);
-
-            let equity_rows: Vec<EquityRow> = bars
-                .iter()
-                .zip(curve.iter())
-                .map(|(bar, equity)| EquityRow {
-                    date: bar.date.to_string(),
-                    equity: *equity,
-                })
-                .collect();
-            let equity_path = format!("{}/equity_curve.csv", cfg.output_dir);
-            write_equity_curve(&equity_path, &equity_rows)?;
-
-            let diagnostics = format!(
-                "=== 诊断信息 ===\n实验名称: {}\n策略类型: {}\n数据文件: {}\nfast: {}\nslow: {}\n手续费: {}\n滑点: {}\n卖出印花税: {}\nK线数量: {}\n开始日期: {}\n结束日期: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n交易次数: {}\n总成本: {:.4}\n期末净值: {:.4}\n",
-                cfg.experiment_name,
-                cfg.strategy,
-                data_file,
-                fast,
-                slow,
-                commission,
-                slippage,
-                stamp_tax_sell,
-                bars.len(),
-                bars.first().unwrap().date,
-                bars.last().unwrap().date,
-                summary.total_return * 100.0,
-                summary.max_drawdown * 100.0,
-                summary.trade_count,
-                summary.total_cost_paid,
-                summary.final_equity
-            );
-            write_diagnostics(&format!("{}/diagnostics.txt", cfg.output_dir), &diagnostics)?;
-
-            println!("=== 回测摘要 ===");
-            println!("总收益：{:.2}%", summary.total_return * 100.0);
-            println!("最大回撤：{:.2}%", summary.max_drawdown * 100.0);
-            println!("交易次数：{}", summary.trade_count);
-            println!("总成本：{:.4}", summary.total_cost_paid);
-            println!("期末净值：{:.4}", summary.final_equity);
-        }
-        strategy_name if is_processed_rotation_strategy(strategy_name) => {
-            let strategy_spec = RotationStrategySpec::from_app_config(&cfg)?;
-            let _ = run_processed_rotation_strategy(&cfg, &strategy_spec)?;
-        }
-        "strategy_compare" => {
-            modes::run_strategy_compare(&cfg, &config_path)?;
-        }
-        "daily_signal" => {
-            modes::run_daily_signal(&cfg, &config_path)?;
-        }
-        "momentum_batch" => {
-            modes::run_momentum_batch(&cfg, &config_path)?;
-        }
-        other => return Err(anyhow!("不支持的策略类型：{}", other)),
-    }
-
-    Ok(())
+    entry_dispatch::run_from_config(&cfg, &config_path)
 }
 
 #[cfg(test)]
@@ -1256,7 +1192,10 @@ mod tests {
     }
 
     fn weight_map(items: &[(&str, f64)]) -> HashMap<String, f64> {
-        items.iter().map(|(asset, weight)| ((*asset).to_string(), *weight)).collect()
+        items
+            .iter()
+            .map(|(asset, weight)| ((*asset).to_string(), *weight))
+            .collect()
     }
 
     #[test]
@@ -1454,8 +1393,14 @@ mod tests {
             },
         );
 
-        assert!(rows.iter().any(|row| row.asset == "hs300" && row.action == "SELL"));
-        assert!(rows.iter().any(|row| row.asset == "cyb" && row.action == "BUY"));
-        assert!(rows.iter().any(|row| row.asset == "dividend" && row.action == "BUY"));
+        assert!(rows
+            .iter()
+            .any(|row| row.asset == "hs300" && row.action == "SELL"));
+        assert!(rows
+            .iter()
+            .any(|row| row.asset == "cyb" && row.action == "BUY"));
+        assert!(rows
+            .iter()
+            .any(|row| row.asset == "dividend" && row.action == "BUY"));
     }
 }

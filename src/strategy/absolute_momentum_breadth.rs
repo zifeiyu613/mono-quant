@@ -104,8 +104,7 @@ mod tests {
                 .collect(),
         );
 
-        let selected =
-            select_absolute_momentum_breadth(&maps, &dates, 1, 1, 0.0, Some("dividend"));
+        let selected = select_absolute_momentum_breadth(&maps, &dates, 1, 1, 0.0, Some("dividend"));
 
         assert_eq!(selected, vec!["dividend".to_string()]);
     }

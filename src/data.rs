@@ -14,8 +14,7 @@ pub struct Bar {
 
 /// 读取 CSV 文件，并按顺序返回 K 线数据数组。
 pub fn read_bars(path: &str) -> anyhow::Result<Vec<Bar>> {
-    let mut rdr = Reader::from_path(path)
-        .with_context(|| format!("打开 CSV 失败：{}", path))?;
+    let mut rdr = Reader::from_path(path).with_context(|| format!("打开 CSV 失败：{}", path))?;
     let mut bars = Vec::new();
     for row in rdr.deserialize() {
         let bar: Bar = row.with_context(|| format!("反序列化 CSV 行失败：{}", path))?;

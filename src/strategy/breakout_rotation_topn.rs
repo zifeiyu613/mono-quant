@@ -99,8 +99,7 @@ mod tests {
             .collect(),
         );
 
-        let selected =
-            select_breakout_rotation_topn(&maps, &dates, 2, 2, 1, Some("dividend"));
+        let selected = select_breakout_rotation_topn(&maps, &dates, 2, 2, 1, Some("dividend"));
 
         assert_eq!(selected, vec!["a".to_string()]);
     }
@@ -136,8 +135,7 @@ mod tests {
             .collect(),
         );
 
-        let selected =
-            select_breakout_rotation_topn(&maps, &dates, 2, 2, 1, Some("dividend"));
+        let selected = select_breakout_rotation_topn(&maps, &dates, 2, 2, 1, Some("dividend"));
 
         assert_eq!(selected, vec!["dividend".to_string()]);
     }

@@ -67,8 +67,7 @@ mod tests {
                 .collect(),
         );
 
-        let selected =
-            select_relative_strength_pair(&maps, &dates, 1, 1, "hs300", "dividend");
+        let selected = select_relative_strength_pair(&maps, &dates, 1, 1, "hs300", "dividend");
 
         assert_eq!(selected, vec!["hs300".to_string()]);
     }

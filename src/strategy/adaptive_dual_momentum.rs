@@ -2,11 +2,7 @@ use crate::data::Bar;
 use chrono::NaiveDate;
 use std::collections::HashMap;
 
-fn adaptive_targets(
-    configured_top_n: usize,
-    base_floor: f64,
-    breadth_ratio: f64,
-) -> (usize, f64) {
+fn adaptive_targets(configured_top_n: usize, base_floor: f64, breadth_ratio: f64) -> (usize, f64) {
     let top_n = configured_top_n.max(1);
 
     if breadth_ratio >= 2.0 / 3.0 {
@@ -48,7 +44,8 @@ pub fn select_adaptive_dual_momentum_assets(
 
     let breadth_count = ranking.iter().filter(|(_, ret)| *ret >= 0.0).count();
     let breadth_ratio = breadth_count as f64 / ranking.len() as f64;
-    let (adaptive_top_n, adaptive_floor) = adaptive_targets(top_n, absolute_momentum_floor, breadth_ratio);
+    let (adaptive_top_n, adaptive_floor) =
+        adaptive_targets(top_n, absolute_momentum_floor, breadth_ratio);
 
     let selected: Vec<String> = ranking
         .into_iter()
@@ -118,15 +115,8 @@ mod tests {
                 .collect(),
         );
 
-        let selected = select_adaptive_dual_momentum_assets(
-            &maps,
-            &dates,
-            1,
-            1,
-            2,
-            0.0,
-            Some("dividend"),
-        );
+        let selected =
+            select_adaptive_dual_momentum_assets(&maps, &dates, 1, 1, 2, 0.0, Some("dividend"));
 
         assert_eq!(selected, vec!["a".to_string(), "b".to_string()]);
     }
@@ -164,15 +154,8 @@ mod tests {
                 .collect(),
         );
 
-        let selected = select_adaptive_dual_momentum_assets(
-            &maps,
-            &dates,
-            1,
-            1,
-            3,
-            0.0,
-            Some("dividend"),
-        );
+        let selected =
+            select_adaptive_dual_momentum_assets(&maps, &dates, 1, 1, 3, 0.0, Some("dividend"));
 
         assert_eq!(selected, vec!["dividend".to_string()]);
     }

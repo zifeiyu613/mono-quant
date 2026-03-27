@@ -1,4 +1,5 @@
 use crate::data::Bar;
+use crate::strategy::relative_strength_pair::select_relative_strength_pair;
 use chrono::NaiveDate;
 use std::collections::HashMap;
 
@@ -11,26 +12,14 @@ pub fn select_defensive_pair_rotation_asset(
     primary_defensive_asset: &str,
     secondary_defensive_asset: &str,
 ) -> Vec<String> {
-    let Some(primary_bars) = asset_maps.get(primary_defensive_asset) else {
-        return Vec::new();
-    };
-    let Some(secondary_bars) = asset_maps.get(secondary_defensive_asset) else {
-        return Vec::new();
-    };
-
-    let primary_now = primary_bars.get(&dates[i]).unwrap().close;
-    let primary_past = primary_bars.get(&dates[i - lookback]).unwrap().close;
-    let secondary_now = secondary_bars.get(&dates[i]).unwrap().close;
-    let secondary_past = secondary_bars.get(&dates[i - lookback]).unwrap().close;
-
-    let primary_return = primary_now / primary_past - 1.0;
-    let secondary_return = secondary_now / secondary_past - 1.0;
-
-    if primary_return >= secondary_return {
-        vec![primary_defensive_asset.to_string()]
-    } else {
-        vec![secondary_defensive_asset.to_string()]
-    }
+    select_relative_strength_pair(
+        asset_maps,
+        dates,
+        i,
+        lookback,
+        primary_defensive_asset,
+        secondary_defensive_asset,
+    )
 }
 
 #[cfg(test)]
@@ -67,14 +56,8 @@ mod tests {
                 .collect(),
         );
 
-        let selected = select_defensive_pair_rotation_asset(
-            &maps,
-            &dates,
-            1,
-            1,
-            "dividend",
-            "bond",
-        );
+        let selected =
+            select_defensive_pair_rotation_asset(&maps, &dates, 1, 1, "dividend", "bond");
 
         assert_eq!(selected, vec!["dividend".to_string()]);
     }

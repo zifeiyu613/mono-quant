@@ -1,6 +1,5 @@
 use crate::config::{
-    DecisionOverrideConfig, HypothesisConfig, ResearchConfig, SampleSplitConfig,
-    WalkForwardConfig,
+    DecisionOverrideConfig, HypothesisConfig, ResearchConfig, SampleSplitConfig, WalkForwardConfig,
 };
 use crate::report::HypothesisAssessmentRow;
 use anyhow::{anyhow, bail};
@@ -204,73 +203,74 @@ pub fn assess_hypotheses(
 fn assess_one(hypothesis: &HypothesisConfig, rows: &[BatchRowView]) -> HypothesisAssessment {
     let min_return_delta = hypothesis.min_return_delta.unwrap_or(0.01);
 
-    let (preferred_group, baseline_group, preferred_rows, baseline_rows) = match hypothesis.rule.as_str() {
-        "prefer_short_lookback" => {
-            let threshold = hypothesis.preferred_max_lookback.unwrap_or(20);
-            (
-                format!("lookback <= {}", threshold),
-                format!("lookback > {}", threshold),
-                rows.iter()
-                    .filter(|row| row.lookback <= threshold)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                rows.iter()
-                    .filter(|row| row.lookback > threshold)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-        }
-        "prefer_higher_top_n" => {
-            let threshold = hypothesis.preferred_min_top_n.unwrap_or(2);
-            (
-                format!("top_n >= {}", threshold),
-                "top_n = 1".to_string(),
-                rows.iter()
-                    .filter(|row| row.top_n >= threshold)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                rows.iter()
-                    .filter(|row| row.top_n == 1)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-        }
-        "prefer_slower_rebalance" => {
-            let threshold = hypothesis.preferred_min_rebalance_freq.unwrap_or(60);
-            (
-                format!("rebalance_freq >= {}", threshold),
-                format!("rebalance_freq < {}", threshold),
-                rows.iter()
-                    .filter(|row| row.rebalance_freq >= threshold)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-                rows.iter()
-                    .filter(|row| row.rebalance_freq < threshold)
-                    .cloned()
-                    .collect::<Vec<_>>(),
-            )
-        }
-        _ => {
-            return HypothesisAssessment {
-                hypothesis_id: hypothesis.id.clone(),
-                statement: hypothesis.statement.clone(),
-                rule: hypothesis.rule.clone(),
-                preferred_group: "N/A".to_string(),
-                baseline_group: "N/A".to_string(),
-                preferred_count: 0,
-                baseline_count: 0,
-                preferred_avg_return: 0.0,
-                baseline_avg_return: 0.0,
-                preferred_avg_drawdown: 0.0,
-                baseline_avg_drawdown: 0.0,
-                preferred_avg_cost: 0.0,
-                baseline_avg_cost: 0.0,
-                score: 0,
-                support_level: SupportLevel::Inconclusive,
-                rationale: format!("不支持的规则类型：{}", hypothesis.rule),
-            };
-        }
-    };
+    let (preferred_group, baseline_group, preferred_rows, baseline_rows) =
+        match hypothesis.rule.as_str() {
+            "prefer_short_lookback" => {
+                let threshold = hypothesis.preferred_max_lookback.unwrap_or(20);
+                (
+                    format!("lookback <= {}", threshold),
+                    format!("lookback > {}", threshold),
+                    rows.iter()
+                        .filter(|row| row.lookback <= threshold)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    rows.iter()
+                        .filter(|row| row.lookback > threshold)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            }
+            "prefer_higher_top_n" => {
+                let threshold = hypothesis.preferred_min_top_n.unwrap_or(2);
+                (
+                    format!("top_n >= {}", threshold),
+                    "top_n = 1".to_string(),
+                    rows.iter()
+                        .filter(|row| row.top_n >= threshold)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    rows.iter()
+                        .filter(|row| row.top_n == 1)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            }
+            "prefer_slower_rebalance" => {
+                let threshold = hypothesis.preferred_min_rebalance_freq.unwrap_or(60);
+                (
+                    format!("rebalance_freq >= {}", threshold),
+                    format!("rebalance_freq < {}", threshold),
+                    rows.iter()
+                        .filter(|row| row.rebalance_freq >= threshold)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    rows.iter()
+                        .filter(|row| row.rebalance_freq < threshold)
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            }
+            _ => {
+                return HypothesisAssessment {
+                    hypothesis_id: hypothesis.id.clone(),
+                    statement: hypothesis.statement.clone(),
+                    rule: hypothesis.rule.clone(),
+                    preferred_group: "N/A".to_string(),
+                    baseline_group: "N/A".to_string(),
+                    preferred_count: 0,
+                    baseline_count: 0,
+                    preferred_avg_return: 0.0,
+                    baseline_avg_return: 0.0,
+                    preferred_avg_drawdown: 0.0,
+                    baseline_avg_drawdown: 0.0,
+                    preferred_avg_cost: 0.0,
+                    baseline_avg_cost: 0.0,
+                    score: 0,
+                    support_level: SupportLevel::Inconclusive,
+                    rationale: format!("不支持的规则类型：{}", hypothesis.rule),
+                };
+            }
+        };
 
     if preferred_rows.is_empty() || baseline_rows.is_empty() {
         return HypothesisAssessment {
@@ -444,7 +444,9 @@ pub fn build_walk_forward_windows(
     let mut train_rows = ((total_rows as f64) * walk_cfg.train_ratio).floor() as usize;
     let mut test_rows = ((total_rows as f64) * walk_cfg.test_ratio).floor() as usize;
 
-    train_rows = train_rows.max(walk_cfg.min_train_rows.unwrap_or(0)).clamp(2, total_rows - 2);
+    train_rows = train_rows
+        .max(walk_cfg.min_train_rows.unwrap_or(0))
+        .clamp(2, total_rows - 2);
     test_rows = test_rows.max(walk_cfg.min_test_rows.unwrap_or(0)).max(2);
 
     if train_rows + test_rows > total_rows {
@@ -483,69 +485,45 @@ pub fn decide_research_state(
     in_sample_assessments: Option<&[HypothesisAssessment]>,
     out_of_sample_assessments: Option<&[HypothesisAssessment]>,
 ) -> ResearchDecision {
-    let strongest = full_assessments.iter().max_by_key(|item| item.support_level);
-    let weakest = full_assessments.iter().min_by_key(|item| item.support_level);
+    let strongest = full_assessments
+        .iter()
+        .max_by_key(|item| item.support_level);
+    let weakest = full_assessments
+        .iter()
+        .min_by_key(|item| item.support_level);
     let full_summary = summarize_assessments(full_assessments);
     let in_sample_summary = in_sample_assessments.map(summarize_assessments);
     let out_sample_summary = out_of_sample_assessments.map(summarize_assessments);
 
-    let (state, recommended_action, rationale, basis) =
-        if let Some(out_summary) = out_sample_summary.as_ref() {
-            if out_summary.strong > 0 && out_summary.rejected == 0 && out_summary.not_supported == 0 {
-                (
+    let (state, recommended_action, rationale, basis) = if let Some(out_summary) =
+        out_sample_summary.as_ref()
+    {
+        if out_summary.strong > 0 && out_summary.rejected == 0 && out_summary.not_supported == 0 {
+            (
                     "validated".to_string(),
                     "进入下一轮研究，并把已验证假设转成更细的执行或扩展问题".to_string(),
                     "样本外评估已经出现强支持且没有明显被否定的核心假设，说明结论开始具备跨样本稳定性。".to_string(),
                     "out_of_sample".to_string(),
                 )
-            } else if in_sample_summary
-                .as_ref()
-                .map(|summary| summary.strong + summary.partial > 0)
-                .unwrap_or(false)
-                && (out_summary.inconclusive > 0 || out_summary.partial > 0)
-            {
-                (
-                    "testing".to_string(),
-                    "继续保持当前方向，但优先补样本外与成本敏感性验证".to_string(),
-                    "样本内已有支持信号，但样本外证据还在形成中，更适合视为验证阶段而不是直接确认。".to_string(),
-                    "in_sample_plus_out_of_sample".to_string(),
-                )
-            } else if full_summary.strong > 0 || full_summary.partial > 0 {
-                (
-                    "refining".to_string(),
-                    "保留当前方向，但优先缩小参数空间并补验证实验".to_string(),
-                    "全样本仍有部分支持，但样本外没有形成足够一致的确认信号，适合继续收敛。".to_string(),
-                    "full_sample".to_string(),
-                )
-            } else if full_summary.rejected + full_summary.not_supported == full_assessments.len()
-                && !full_assessments.is_empty()
-            {
-                (
-                    "paused".to_string(),
-                    "暂停当前方向，重写研究假设或更换资产池后再继续".to_string(),
-                    "全样本与样本外都缺乏支持，继续追加同类实验的价值有限。".to_string(),
-                    "full_sample".to_string(),
-                )
-            } else {
-                (
-                    "exploring".to_string(),
-                    "保留探索状态，增加样本与验证维度后再决策".to_string(),
-                    "当前证据仍偏探索性，支持与否都不够集中。".to_string(),
-                    "full_sample".to_string(),
-                )
-            }
-        } else if full_summary.strong > 0 && full_summary.rejected == 0 && full_summary.not_supported == 0 {
+        } else if in_sample_summary
+            .as_ref()
+            .map(|summary| summary.strong + summary.partial > 0)
+            .unwrap_or(false)
+            && (out_summary.inconclusive > 0 || out_summary.partial > 0)
+        {
             (
-                "refining".to_string(),
-                "继续推进当前方向，并优先补充样本外验证".to_string(),
-                "全样本已经出现较强支持，但尚未做样本外拆分，适合先进入更严格的验证流程。".to_string(),
-                "full_sample".to_string(),
+                "testing".to_string(),
+                "继续保持当前方向，但优先补样本外与成本敏感性验证".to_string(),
+                "样本内已有支持信号，但样本外证据还在形成中，更适合视为验证阶段而不是直接确认。"
+                    .to_string(),
+                "in_sample_plus_out_of_sample".to_string(),
             )
         } else if full_summary.strong > 0 || full_summary.partial > 0 {
             (
-                "exploring".to_string(),
-                "保留探索状态，增加样本与验证维度后再决策".to_string(),
-                "已有初步支持，但在没有样本外验证时还不适合进一步升级状态。".to_string(),
+                "refining".to_string(),
+                "保留当前方向，但优先缩小参数空间并补验证实验".to_string(),
+                "全样本仍有部分支持，但样本外没有形成足够一致的确认信号，适合继续收敛。"
+                    .to_string(),
                 "full_sample".to_string(),
             )
         } else if full_summary.rejected + full_summary.not_supported == full_assessments.len()
@@ -554,17 +532,51 @@ pub fn decide_research_state(
             (
                 "paused".to_string(),
                 "暂停当前方向，重写研究假设或更换资产池后再继续".to_string(),
-                "当前假设整体缺乏支持，继续加实验的边际收益较低。".to_string(),
+                "全样本与样本外都缺乏支持，继续追加同类实验的价值有限。".to_string(),
                 "full_sample".to_string(),
             )
         } else {
             (
                 "exploring".to_string(),
                 "保留探索状态，增加样本与验证维度后再决策".to_string(),
-                "结果仍偏探索性，现阶段更适合补证据而不是直接下结论。".to_string(),
+                "当前证据仍偏探索性，支持与否都不够集中。".to_string(),
                 "full_sample".to_string(),
             )
-        };
+        }
+    } else if full_summary.strong > 0
+        && full_summary.rejected == 0
+        && full_summary.not_supported == 0
+    {
+        (
+            "refining".to_string(),
+            "继续推进当前方向，并优先补充样本外验证".to_string(),
+            "全样本已经出现较强支持，但尚未做样本外拆分，适合先进入更严格的验证流程。".to_string(),
+            "full_sample".to_string(),
+        )
+    } else if full_summary.strong > 0 || full_summary.partial > 0 {
+        (
+            "exploring".to_string(),
+            "保留探索状态，增加样本与验证维度后再决策".to_string(),
+            "已有初步支持，但在没有样本外验证时还不适合进一步升级状态。".to_string(),
+            "full_sample".to_string(),
+        )
+    } else if full_summary.rejected + full_summary.not_supported == full_assessments.len()
+        && !full_assessments.is_empty()
+    {
+        (
+            "paused".to_string(),
+            "暂停当前方向，重写研究假设或更换资产池后再继续".to_string(),
+            "当前假设整体缺乏支持，继续加实验的边际收益较低。".to_string(),
+            "full_sample".to_string(),
+        )
+    } else {
+        (
+            "exploring".to_string(),
+            "保留探索状态，增加样本与验证维度后再决策".to_string(),
+            "结果仍偏探索性，现阶段更适合补证据而不是直接下结论。".to_string(),
+            "full_sample".to_string(),
+        )
+    };
 
     ResearchDecision {
         topic: research.topic.clone(),
@@ -683,14 +695,18 @@ pub fn summarize_walk_forward_assessments(
             continue;
         }
 
-        let supported_windows = levels.iter().filter(|level| is_positive_support(**level)).count();
+        let supported_windows = levels
+            .iter()
+            .filter(|level| is_positive_support(**level))
+            .count();
         let rejected_windows = levels
             .iter()
             .filter(|level| matches!(level, SupportLevel::Rejected | SupportLevel::NotSupported))
             .count();
         let strongest_support = *levels.iter().max().unwrap();
         let weakest_support = *levels.iter().min().unwrap();
-        let average_score = scores.iter().map(|score| *score as f64).sum::<f64>() / scores.len() as f64;
+        let average_score =
+            scores.iter().map(|score| *score as f64).sum::<f64>() / scores.len() as f64;
         let consistency_ratio = supported_windows as f64 / levels.len() as f64;
 
         rows.push(WalkForwardSummaryRow {
@@ -840,9 +856,11 @@ pub fn build_evidence_summary(
                 let walk_points = if summary.total_windows == 0 {
                     0
                 } else {
-                    ((summary.supported_windows as f64 / summary.total_windows as f64) * 20.0).round() as i32
+                    ((summary.supported_windows as f64 / summary.total_windows as f64) * 20.0)
+                        .round() as i32
                 };
-                confidence_score += walk_points.saturating_sub((summary.rejected_windows as i32) * 4);
+                confidence_score +=
+                    walk_points.saturating_sub((summary.rejected_windows as i32) * 4);
             }
 
             if let Some(summary) = cost_summary {
@@ -855,7 +873,8 @@ pub fn build_evidence_summary(
                 } else if summary.stable_bucket_count + 1 >= summary.cost_bucket_count {
                     cost_points += 6;
                 }
-                if parse_support_level(&summary.weakest_support) >= SupportLevel::PartiallySupported {
+                if parse_support_level(&summary.weakest_support) >= SupportLevel::PartiallySupported
+                {
                     cost_points += 5;
                 }
                 confidence_score += cost_points.min(15);
@@ -899,10 +918,13 @@ pub fn build_evidence_summary(
                 failure_conditions.push("当前未发现明显失效条件，但仍需持续监控");
             }
 
-            let walk_supported_windows = walk_summary.map(|item| item.supported_windows).unwrap_or(0);
+            let walk_supported_windows =
+                walk_summary.map(|item| item.supported_windows).unwrap_or(0);
             let walk_total_windows = walk_summary.map(|item| item.total_windows).unwrap_or(0);
             let cost_bucket_count = cost_summary.map(|item| item.cost_bucket_count).unwrap_or(0);
-            let stable_cost_bucket_count = cost_summary.map(|item| item.stable_bucket_count).unwrap_or(0);
+            let stable_cost_bucket_count = cost_summary
+                .map(|item| item.stable_bucket_count)
+                .unwrap_or(0);
 
             EvidenceSummaryRow {
                 hypothesis_id: hypothesis.id.clone(),
@@ -984,7 +1006,10 @@ pub fn render_research_plan(research: &ResearchConfig) -> String {
         }
     }
     if let Some(walk_cfg) = &research.walk_forward {
-        lines.push(format!("walk-forward 训练比例: {:.2}", walk_cfg.train_ratio));
+        lines.push(format!(
+            "walk-forward 训练比例: {:.2}",
+            walk_cfg.train_ratio
+        ));
         lines.push(format!("walk-forward 测试比例: {:.2}", walk_cfg.test_ratio));
         if let Some(max_windows) = walk_cfg.max_windows {
             lines.push(format!("walk-forward 最大窗口数: {}", max_windows));
@@ -1156,7 +1181,10 @@ fn unique_unit_costs(rows: &[BatchRowView]) -> Vec<f64> {
     values
 }
 
-fn find_support_level(assessments: &[HypothesisAssessment], hypothesis_id: &str) -> Option<SupportLevel> {
+fn find_support_level(
+    assessments: &[HypothesisAssessment],
+    hypothesis_id: &str,
+) -> Option<SupportLevel> {
     assessments
         .iter()
         .find(|item| item.hypothesis_id == hypothesis_id)

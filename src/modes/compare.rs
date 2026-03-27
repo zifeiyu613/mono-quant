@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::strategy::runtime::is_processed_rotation_strategy;
 
 pub(super) fn run_strategy_compare(
     compare_cfg: &config::AppConfig,
@@ -28,7 +29,10 @@ pub(super) fn run_strategy_compare(
     for config_ref in compare_configs {
         let resolved_path = resolve_child_config_path(compare_config_path, &config_ref);
         let resolved_str = resolved_path.to_string_lossy().to_string();
-        log_info(&format!("正在加载对比策略配置：{}", resolved_path.display()));
+        log_info(&format!(
+            "正在加载对比策略配置：{}",
+            resolved_path.display()
+        ));
         let sub_cfg = load_config(&resolved_str)
             .with_context(|| format!("读取策略配置失败：{}", resolved_path.display()))?;
         if !is_processed_rotation_strategy(&sub_cfg.strategy) {

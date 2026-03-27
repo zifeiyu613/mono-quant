@@ -54,11 +54,17 @@ mod tests {
         let defensive = vec![bar("2024-01-01", 100.0), bar("2024-01-02", 101.0)];
         maps.insert(
             "hs300".to_string(),
-            benchmark.into_iter().map(|item| (item.date, item)).collect(),
+            benchmark
+                .into_iter()
+                .map(|item| (item.date, item))
+                .collect(),
         );
         maps.insert(
             "dividend".to_string(),
-            defensive.into_iter().map(|item| (item.date, item)).collect(),
+            defensive
+                .into_iter()
+                .map(|item| (item.date, item))
+                .collect(),
         );
         maps
     }
