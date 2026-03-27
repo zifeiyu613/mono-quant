@@ -3,9 +3,11 @@ use crate::data::{intersect_dates, Bar};
 use crate::engine::portfolio::compute_turnover_amount;
 use crate::metrics::max_drawdown;
 use crate::report::{ContributionRow, HoldingTraceRow, RebalanceRow, RiskEventRow};
+use crate::strategy::dual_momentum::select_dual_momentum_assets;
 use crate::strategy::momentum_topn::rank_assets_by_lookback;
+use crate::strategy::risk_off_rotation::select_risk_off_rotation_asset;
 use chrono::NaiveDate;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
 pub struct BacktestSummary {
@@ -92,6 +94,154 @@ pub fn run_momentum_topn_backtest(
     slippage: f64,
     risk: Option<&RiskConfig>,
 ) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            let ranking = rank_assets_by_lookback(maps, dates, i, lookback);
+            let selected_count = effective_selected_count(top_n, ranking.len(), risk);
+            ranking
+                .into_iter()
+                .take(selected_count)
+                .map(|item| item.0)
+                .collect()
+        },
+    )
+}
+
+/// 运行单资产买入并持有回测（默认只在首个可交易日建仓）。
+pub fn run_buy_hold_single_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    benchmark_asset: &str,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        0,
+        usize::MAX,
+        commission,
+        slippage,
+        risk,
+        |_i, _dates, maps| {
+            if maps.contains_key(benchmark_asset) {
+                vec![benchmark_asset.to_string()]
+            } else {
+                Vec::new()
+            }
+        },
+    )
+}
+
+/// 运行多资产等权买入并持有回测（默认只在首个可交易日建仓）。
+pub fn run_buy_hold_equal_weight_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        0,
+        usize::MAX,
+        commission,
+        slippage,
+        risk,
+        |_i, _dates, maps| {
+            let mut names: Vec<String> = maps.keys().cloned().collect();
+            names.sort();
+            names
+        },
+    )
+}
+
+/// 运行双动量回测：相对动量排名 + 绝对动量过滤，不满足时可回退到防守资产。
+pub fn run_dual_momentum_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    lookback: usize,
+    rebalance_freq: usize,
+    top_n: usize,
+    absolute_momentum_floor: f64,
+    defensive_asset: Option<&str>,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            select_dual_momentum_assets(
+                maps,
+                dates,
+                i,
+                lookback,
+                top_n,
+                absolute_momentum_floor,
+                defensive_asset,
+            )
+        },
+    )
+}
+
+/// 运行风险开关轮动回测：风险资产最强者通过门槛则持有，否则回退到防守资产。
+pub fn run_risk_off_rotation_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    lookback: usize,
+    rebalance_freq: usize,
+    risk_assets: &[String],
+    absolute_momentum_floor: f64,
+    defensive_asset: &str,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            select_risk_off_rotation_asset(
+                maps,
+                dates,
+                i,
+                lookback,
+                risk_assets,
+                absolute_momentum_floor,
+                defensive_asset,
+            )
+        },
+    )
+}
+
+fn run_rotation_backtest<F>(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    lookback: usize,
+    rebalance_freq: usize,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+    mut select_assets: F,
+) -> MomentumTopNResult
+where
+    F: FnMut(
+        usize,
+        &[NaiveDate],
+        &HashMap<String, HashMap<NaiveDate, Bar>>,
+    ) -> Vec<String>,
+{
     let dates = intersect_dates(asset_maps);
     let unit_cost = commission + slippage;
     let cooldown_days = risk.and_then(|cfg| cfg.stop_cooldown_days);
@@ -154,13 +304,9 @@ pub fn run_momentum_topn_backtest(
         }
 
         if !permanently_stopped && !in_cooldown && (i - lookback) % rebalance_freq == 0 {
-            let ranking = rank_assets_by_lookback(asset_maps, &dates, i, lookback);
-            let selected_count = effective_selected_count(top_n, ranking.len(), risk);
-            let selected: Vec<String> = ranking
-                .into_iter()
-                .take(selected_count)
-                .map(|item| item.0)
-                .collect();
+            let mut selected = select_assets(i, &dates, asset_maps);
+            let mut seen = HashSet::new();
+            selected.retain(|asset| asset_maps.contains_key(asset) && seen.insert(asset.clone()));
 
             let total_before = if holdings_value.is_empty() {
                 total_equity
@@ -168,6 +314,52 @@ pub fn run_momentum_topn_backtest(
                 holdings_value.values().sum::<f64>()
             };
             total_equity = total_before;
+
+            if let Some(max_weight) = risk.and_then(|cfg| cfg.max_single_asset_weight) {
+                let required_assets = required_asset_count_for_max_weight(max_weight);
+                if !selected.is_empty() && selected.len() < required_assets {
+                    risk_events.push(RiskEventRow {
+                        date: date.to_string(),
+                        event_type: "selection_guard".to_string(),
+                        detail: format!(
+                            "本次选中资产数量 {} 小于单资产权重上限 {:.2}% 要求的最少资产数 {}，已跳过调仓",
+                            selected.len(),
+                            max_weight * 100.0,
+                            required_assets
+                        ),
+                    });
+                    rebalance_rows.push(RebalanceRow {
+                        date: date.to_string(),
+                        selected_assets: "SKIPPED_BY_RISK".to_string(),
+                        turnover_amount: 0.0,
+                        cost: 0.0,
+                        equity_before: total_before,
+                        equity_after: total_before,
+                    });
+                    continue;
+                }
+            }
+
+            if selected.is_empty() {
+                let target_values: HashMap<String, f64> = HashMap::new();
+                let turnover_amount = compute_turnover_amount(&holdings_value, &target_values);
+                let cost = turnover_amount * unit_cost;
+                total_equity -= cost;
+                total_cost_paid += cost;
+                holdings_value.clear();
+                if turnover_amount > 0.0 {
+                    trade_count += 1;
+                }
+                rebalance_rows.push(RebalanceRow {
+                    date: date.to_string(),
+                    selected_assets: "TO_CASH".to_string(),
+                    turnover_amount,
+                    cost,
+                    equity_before: total_before,
+                    equity_after: total_equity,
+                });
+                continue;
+            }
 
             let target_weight = 1.0 / selected.len() as f64;
             let mut target_values = HashMap::new();
@@ -630,5 +822,36 @@ mod tests {
             .iter()
             .any(|event| event.event_type == "cooldown_recovery"));
         assert!(result.rebalances.len() >= 2);
+    }
+
+    #[test]
+    fn buy_hold_equal_weight_builds_initial_equal_portfolio() {
+        let result = run_buy_hold_equal_weight_backtest(&sample_asset_maps(), 0.0, 0.0, None);
+        assert!(!result.rebalances.is_empty());
+        let first = &result.rebalances[0];
+        assert!(first.selected_assets.contains("a"));
+        assert!(first.selected_assets.contains("b"));
+        assert!(first.selected_assets.contains("c"));
+    }
+
+    #[test]
+    fn dual_momentum_falls_back_to_defensive_asset() {
+        let result = run_dual_momentum_backtest(
+            &sample_asset_maps(),
+            1,
+            1,
+            1,
+            0.2,
+            Some("b"),
+            0.0,
+            0.0,
+            None,
+        );
+
+        assert!(!result.rebalances.is_empty());
+        assert!(result
+            .rebalances
+            .iter()
+            .any(|row| row.selected_assets == "b"));
     }
 }

@@ -1,0 +1,18 @@
+{
+  "experiment_name": "buy_hold_equal_weight_processed",
+  "strategy": "buy_hold_equal_weight",
+  "asset_files": {
+    "hs300": "data/processed/hs300.csv",
+    "zz500": "data/processed/zz500.csv",
+    "cyb": "data/processed/cyb.csv",
+    "dividend": "data/processed/dividend.csv"
+  },
+  "commission": 0.0003,
+  "slippage": 0.0001,
+  "risk": {
+    "min_aligned_days": 250,
+    "max_single_asset_weight": 0.4
+  },
+  "output_dir": "output/buy_hold_equal_weight_processed"
+}
+

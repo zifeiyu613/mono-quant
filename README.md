@@ -6,6 +6,10 @@
 - 读取单个 ETF CSV（日线）
 - 运行双均线策略（MA Cross）
 - 运行多 ETF Top N 动量轮动
+- 运行单资产 Buy & Hold 基准
+- 运行多资产等权 Buy & Hold 基准
+- 运行双动量策略（相对动量 + 绝对动量过滤 + 防守资产回退）
+- 运行风险开关轮动策略（风险资产最强者 / 防守资产切换）
 - 输出 `equity_curve.csv`
 - 输出 `rebalance_log.csv`
 - 输出 `holdings_trace.csv`
@@ -53,7 +57,27 @@ cargo run -- --config configs/momentum_topn.json
 cargo run -- --config configs/momentum_batch.json
 ```
 
-### 5. 批量研究治理输出
+### 5. 单资产 Buy & Hold 基准（processed-first）
+```bash
+cargo run -- --config configs/buy_hold_single.json
+```
+
+### 6. 多资产等权 Buy & Hold 基准（processed-first）
+```bash
+cargo run -- --config configs/buy_hold_equal_weight.json
+```
+
+### 7. 双动量策略（processed-first）
+```bash
+cargo run -- --config configs/dual_momentum.json
+```
+
+### 8. 风险开关轮动策略（processed-first）
+```bash
+cargo run -- --config configs/risk_off_rotation.json
+```
+
+### 9. 批量研究治理输出
 `momentum_batch` 现在支持可选的研究治理配置，会在批量实验完成后额外输出：
 - `hypothesis_assessment.csv`
 - `hypothesis_assessment_in_sample.csv`
@@ -140,6 +164,7 @@ python scripts/build_processed_etf_data.py --config scripts/fetch_config.json
 - `docs/real-data.md`
 - `docs/research-workflow.md`
 - `docs/strategy-live-plan.md`
+- `docs/strategy-architecture.md`
 
 ## 目录结构
 ```text

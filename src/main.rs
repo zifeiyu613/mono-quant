@@ -22,6 +22,7 @@ use research::{
     summarize_walk_forward_assessments, walk_forward_detail_rows, BatchRowView,
 };
 use serde::Serialize;
+use strategy::runtime::RotationStrategySpec;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -350,6 +351,167 @@ fn log_processed_summary(asset_files: &HashMap<String, String>) -> anyhow::Resul
     Ok(())
 }
 
+fn run_processed_rotation_strategy(
+    cfg: &config::AppConfig,
+    strategy_spec: &RotationStrategySpec,
+) -> anyhow::Result<()> {
+    ensure_output_dir(&cfg.output_dir)?;
+    let asset_files = cfg
+        .asset_files
+        .clone()
+        .ok_or_else(|| anyhow!("{} 需要提供 asset_files", cfg.strategy))?;
+    validate_risk_config(cfg.risk.as_ref(), Some(asset_files.len()))?;
+    let commission = cfg
+        .commission
+        .ok_or_else(|| anyhow!("{} 需要提供 commission", cfg.strategy))?;
+    let slippage = cfg
+        .slippage
+        .ok_or_else(|| anyhow!("{} 需要提供 slippage", cfg.strategy))?;
+
+    log_info(&format!("正在校验 {} 的 processed 输入", cfg.strategy));
+    validate_processed_inputs(&asset_files)?;
+    if let Some(manifest_path) = infer_manifest_path(&asset_files) {
+        log_info(&format!("使用 processed 对齐清单：{}", manifest_path.display()));
+    }
+    if let Some(summary_json_path) = infer_summary_json_path(&asset_files) {
+        log_info(&format!("使用 processed 摘要 JSON：{}", summary_json_path.display()));
+    }
+    log_processed_summary(&asset_files)?;
+
+    log_info(&format!("正在加载 {} 的多资产数据", cfg.strategy));
+    let mut asset_maps = HashMap::new();
+    for (name, path) in &asset_files {
+        log_info(&format!("正在加载资产 {}：{}", name, path));
+        asset_maps.insert(
+            name.clone(),
+            data::read_bars_map(path).with_context(|| format!("读取资产 {} 失败：{}", name, path))?,
+        );
+    }
+
+    for required_asset in strategy_spec.required_assets() {
+        if !asset_maps.contains_key(required_asset) {
+            return Err(anyhow!(
+                "策略 {} 依赖资产 {}，但 asset_files 未提供该资产",
+                cfg.strategy,
+                required_asset
+            ));
+        }
+    }
+
+    let dates = data::intersect_dates(&asset_maps);
+    let required_lookback = strategy_spec.required_lookback();
+    if dates.len() <= required_lookback + 1 {
+        return Err(anyhow!(
+            "{} 的对齐交易日不足：当前对齐后仅 {} 个交易日，要求至少 > {}",
+            cfg.strategy,
+            dates.len(),
+            required_lookback + 1
+        ));
+    }
+    if let Some(min_days) = cfg.risk.as_ref().and_then(|risk| risk.min_aligned_days) {
+        if dates.len() < min_days {
+            return Err(anyhow!(
+                "{} 的对齐交易日不足：当前 {}，低于风控要求的最小样本 {}",
+                cfg.strategy,
+                dates.len(),
+                min_days
+            ));
+        }
+    }
+
+    println!(
+        "对齐区间：{} -> {}（共 {} 个对齐交易日）",
+        dates.first().unwrap(),
+        dates.last().unwrap(),
+        dates.len()
+    );
+    log_info(&format!("正在运行 {} 回测", cfg.strategy));
+    let result = strategy_spec.run(&asset_maps, commission, slippage, cfg.risk.as_ref());
+
+    let equity_rows: Vec<EquityRow> = result
+        .equity_curve
+        .iter()
+        .map(|(d, e)| EquityRow {
+            date: d.to_string(),
+            equity: *e,
+        })
+        .collect();
+    write_equity_curve(&format!("{}/equity_curve.csv", cfg.output_dir), &equity_rows)?;
+    write_rebalance_log(&format!("{}/rebalance_log.csv", cfg.output_dir), &result.rebalances)?;
+    write_holdings_trace(&format!("{}/holdings_trace.csv", cfg.output_dir), &result.holdings_trace)?;
+    write_contributions(
+        &format!("{}/asset_contribution.csv", cfg.output_dir),
+        &result.contributions,
+    )?;
+    if !result.risk_events.is_empty() {
+        write_csv_rows(&format!("{}/risk_events.csv", cfg.output_dir), &result.risk_events)?;
+    }
+    write_diagnostics(
+        &format!("{}/risk_summary.txt", cfg.output_dir),
+        &render_risk_summary(
+            cfg.risk.as_ref(),
+            dates.len(),
+            usize::from(result.summary.halted_by_risk),
+            1,
+            &result
+                .summary
+                .halt_reason
+                .clone()
+                .into_iter()
+                .collect::<Vec<_>>(),
+        ),
+    )?;
+
+    let strategy_lines = strategy_spec
+        .detail_rows()
+        .into_iter()
+        .map(|(k, v)| format!("{}: {}", k, v))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let manifest_path = infer_manifest_path(&asset_files).unwrap();
+    let summary_json_path = infer_summary_json_path(&asset_files).unwrap();
+    let summary_txt_path = infer_summary_txt_path(&asset_files).unwrap();
+    let diagnostics = format!(
+        "=== 诊断信息 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n资产列表: {}\n{}\n手续费: {}\n滑点: {}\n对齐交易日数量: {}\n开始日期: {}\n结束日期: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n调仓次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n是否触发风控停机: {}\n风控停机原因: {}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n输出文件:\n- equity_curve.csv\n- rebalance_log.csv\n- holdings_trace.csv\n- asset_contribution.csv\n- risk_events.csv（如触发风控）\n",
+        cfg.experiment_name,
+        cfg.strategy,
+        manifest_path.display(),
+        summary_json_path.display(),
+        summary_txt_path.display(),
+        asset_files.keys().cloned().collect::<Vec<_>>().join(","),
+        strategy_lines,
+        commission,
+        slippage,
+        dates.len(),
+        dates.first().unwrap(),
+        dates.last().unwrap(),
+        result.summary.total_return * 100.0,
+        result.summary.max_drawdown * 100.0,
+        result.summary.trade_count,
+        result.summary.total_cost_paid,
+        result.summary.final_equity,
+        result.summary.halted_by_risk,
+        result.summary
+            .halt_reason
+            .clone()
+            .unwrap_or_else(|| "未触发".to_string()),
+        result.top_contributor,
+        result.worst_contributor,
+    );
+    write_diagnostics(&format!("{}/diagnostics.txt", cfg.output_dir), &diagnostics)?;
+
+    println!("=== {} ===", strategy_spec.summary_title());
+    println!("总收益：{:.2}%", result.summary.total_return * 100.0);
+    println!("最大回撤：{:.2}%", result.summary.max_drawdown * 100.0);
+    println!("调仓次数：{}", result.summary.trade_count);
+    println!("总成本：{:.6}", result.summary.total_cost_paid);
+    println!("期末净值：{:.4}", result.summary.final_equity);
+    println!("是否触发风控停机：{}", result.summary.halted_by_risk);
+    println!("贡献最高资产：{:?}", result.top_contributor);
+    println!("贡献最低资产：{:?}", result.worst_contributor);
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let config_path = parse_config_path()?;
     log_info(&format!("正在加载配置：{}", config_path));
@@ -434,159 +596,13 @@ fn main() -> anyhow::Result<()> {
             println!("总成本：{:.4}", summary.total_cost_paid);
             println!("期末净值：{:.4}", summary.final_equity);
         }
-        "momentum_topn" => {
-            ensure_output_dir(&cfg.output_dir)?;
-            let asset_files = cfg
-                .asset_files
-                .clone()
-                .ok_or_else(|| anyhow!("momentum_topn 需要提供 asset_files"))?;
-            validate_risk_config(cfg.risk.as_ref(), Some(asset_files.len()))?;
-            let lookback = cfg
-                .lookback
-                .ok_or_else(|| anyhow!("momentum_topn 需要提供 lookback"))?;
-            let rebalance_freq = cfg
-                .rebalance_freq
-                .ok_or_else(|| anyhow!("momentum_topn 需要提供 rebalance_freq"))?;
-            let top_n = cfg.top_n.ok_or_else(|| anyhow!("momentum_topn 需要提供 top_n"))?;
-            let commission = cfg
-                .commission
-                .ok_or_else(|| anyhow!("momentum_topn 需要提供 commission"))?;
-            let slippage = cfg
-                .slippage
-                .ok_or_else(|| anyhow!("momentum_topn 需要提供 slippage"))?;
-
-            log_info("正在校验 momentum_topn 的 processed 输入");
-            validate_processed_inputs(&asset_files)?;
-            if let Some(manifest_path) = infer_manifest_path(&asset_files) {
-                log_info(&format!("使用 processed 对齐清单：{}", manifest_path.display()));
-            }
-            if let Some(summary_json_path) = infer_summary_json_path(&asset_files) {
-                log_info(&format!("使用 processed 摘要 JSON：{}", summary_json_path.display()));
-            }
-            log_processed_summary(&asset_files)?;
-
-            log_info("正在加载 momentum_topn 的多资产数据");
-            let mut asset_maps = HashMap::new();
-            for (name, path) in &asset_files {
-                log_info(&format!("正在加载资产 {}：{}", name, path));
-                asset_maps.insert(
-                    name.clone(),
-                    data::read_bars_map(path)
-                        .with_context(|| format!("读取资产 {} 失败：{}", name, path))?,
-                );
-            }
-
-            let dates = data::intersect_dates(&asset_maps);
-            if dates.len() <= lookback + 1 {
-                return Err(anyhow!(
-                    "momentum_topn 的对齐交易日不足：当前对齐后仅 {} 个交易日",
-                    dates.len()
-                ));
-            }
-            if let Some(min_days) = cfg.risk.as_ref().and_then(|risk| risk.min_aligned_days) {
-                if dates.len() < min_days {
-                    return Err(anyhow!(
-                        "momentum_topn 的对齐交易日不足：当前 {}，低于风控要求的最小样本 {}",
-                        dates.len(),
-                        min_days
-                    ));
-                }
-            }
-
-            println!(
-                "对齐区间：{} -> {}（共 {} 个对齐交易日）",
-                dates.first().unwrap(),
-                dates.last().unwrap(),
-                dates.len()
-            );
-            log_info("正在运行 momentum_topn 回测");
-            let result = engine::backtest::run_momentum_topn_backtest(
-                &asset_maps,
-                lookback,
-                rebalance_freq,
-                top_n,
-                commission,
-                slippage,
-                cfg.risk.as_ref(),
-            );
-
-            let equity_rows: Vec<EquityRow> = result
-                .equity_curve
-                .iter()
-                .map(|(d, e)| EquityRow {
-                    date: d.to_string(),
-                    equity: *e,
-                })
-                .collect();
-            write_equity_curve(&format!("{}/equity_curve.csv", cfg.output_dir), &equity_rows)?;
-            write_rebalance_log(&format!("{}/rebalance_log.csv", cfg.output_dir), &result.rebalances)?;
-            write_holdings_trace(&format!("{}/holdings_trace.csv", cfg.output_dir), &result.holdings_trace)?;
-            write_contributions(
-                &format!("{}/asset_contribution.csv", cfg.output_dir),
-                &result.contributions,
-            )?;
-            if !result.risk_events.is_empty() {
-                write_csv_rows(&format!("{}/risk_events.csv", cfg.output_dir), &result.risk_events)?;
-            }
-            write_diagnostics(
-                &format!("{}/risk_summary.txt", cfg.output_dir),
-                &render_risk_summary(
-                    cfg.risk.as_ref(),
-                    dates.len(),
-                    usize::from(result.summary.halted_by_risk),
-                    1,
-                    &result
-                        .summary
-                        .halt_reason
-                        .clone()
-                        .into_iter()
-                        .collect::<Vec<_>>(),
-                ),
-            )?;
-
-            let manifest_path = infer_manifest_path(&asset_files).unwrap();
-            let summary_json_path = infer_summary_json_path(&asset_files).unwrap();
-            let summary_txt_path = infer_summary_txt_path(&asset_files).unwrap();
-            let diagnostics = format!(
-                "=== 诊断信息 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n资产列表: {}\nlookback: {}\nrebalance_freq: {}\ntop_n: {}\n手续费: {}\n滑点: {}\n对齐交易日数量: {}\n开始日期: {}\n结束日期: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n调仓次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n是否触发风控停机: {}\n风控停机原因: {}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n输出文件:\n- equity_curve.csv\n- rebalance_log.csv\n- holdings_trace.csv\n- asset_contribution.csv\n- risk_events.csv（如触发风控）\n",
-                cfg.experiment_name,
-                cfg.strategy,
-                manifest_path.display(),
-                summary_json_path.display(),
-                summary_txt_path.display(),
-                asset_files.keys().cloned().collect::<Vec<_>>().join(","),
-                lookback,
-                rebalance_freq,
-                top_n,
-                commission,
-                slippage,
-                dates.len(),
-                dates.first().unwrap(),
-                dates.last().unwrap(),
-                result.summary.total_return * 100.0,
-                result.summary.max_drawdown * 100.0,
-                result.summary.trade_count,
-                result.summary.total_cost_paid,
-                result.summary.final_equity,
-                result.summary.halted_by_risk,
-                result.summary
-                    .halt_reason
-                    .clone()
-                    .unwrap_or_else(|| "未触发".to_string()),
-                result.top_contributor,
-                result.worst_contributor,
-            );
-            write_diagnostics(&format!("{}/diagnostics.txt", cfg.output_dir), &diagnostics)?;
-
-            println!("=== 动量轮动摘要 ===");
-            println!("总收益：{:.2}%", result.summary.total_return * 100.0);
-            println!("最大回撤：{:.2}%", result.summary.max_drawdown * 100.0);
-            println!("调仓次数：{}", result.summary.trade_count);
-            println!("总成本：{:.6}", result.summary.total_cost_paid);
-            println!("期末净值：{:.4}", result.summary.final_equity);
-            println!("是否触发风控停机：{}", result.summary.halted_by_risk);
-            println!("贡献最高资产：{:?}", result.top_contributor);
-            println!("贡献最低资产：{:?}", result.worst_contributor);
+        "buy_hold_single"
+        | "buy_hold_equal_weight"
+        | "dual_momentum"
+        | "risk_off_rotation"
+        | "momentum_topn" => {
+            let strategy_spec = RotationStrategySpec::from_app_config(&cfg)?;
+            run_processed_rotation_strategy(&cfg, &strategy_spec)?;
         }
         "momentum_batch" => {
             let asset_files = cfg
