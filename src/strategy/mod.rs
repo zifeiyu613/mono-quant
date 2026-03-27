@@ -1,7 +1,10 @@
 pub mod absolute_momentum_breadth;
 pub mod absolute_momentum_single;
+pub mod adaptive_dual_momentum;
 pub mod breakout_rotation_topn;
+pub mod breakdown_timing_single;
 pub mod breakout_timing_single;
+pub mod defensive_pair_rotation;
 pub mod low_volatility_topn;
 pub mod ma_cross;
 pub mod ma_rotation_topn;
@@ -12,4 +15,5 @@ pub mod reversal_bottomn;
 pub mod dual_momentum;
 pub mod runtime;
 pub mod risk_off_rotation;
+pub mod volatility_target_rotation;
 pub mod volatility_adjusted_momentum;

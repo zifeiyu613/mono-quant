@@ -3,10 +3,13 @@ use crate::data::{intersect_dates, Bar};
 use crate::engine::portfolio::compute_turnover_amount;
 use crate::metrics::max_drawdown;
 use crate::report::{ContributionRow, HoldingTraceRow, RebalanceRow, RiskEventRow};
+use crate::strategy::adaptive_dual_momentum::select_adaptive_dual_momentum_assets;
 use crate::strategy::absolute_momentum_breadth::select_absolute_momentum_breadth;
 use crate::strategy::absolute_momentum_single::select_absolute_momentum_single;
 use crate::strategy::breakout_rotation_topn::select_breakout_rotation_topn;
+use crate::strategy::breakdown_timing_single::select_breakdown_timing_single;
 use crate::strategy::breakout_timing_single::select_breakout_timing_single;
+use crate::strategy::defensive_pair_rotation::select_defensive_pair_rotation_asset;
 use crate::strategy::dual_momentum::select_dual_momentum_assets;
 use crate::strategy::low_volatility_topn::rank_assets_by_low_volatility;
 use crate::strategy::ma_timing_single::select_ma_timing_single;
@@ -15,6 +18,7 @@ use crate::strategy::momentum_topn::rank_assets_by_lookback;
 use crate::strategy::relative_strength_pair::select_relative_strength_pair;
 use crate::strategy::risk_off_rotation::select_risk_off_rotation_asset;
 use crate::strategy::reversal_bottomn::rank_assets_by_reversal;
+use crate::strategy::volatility_target_rotation::select_volatility_target_rotation_assets;
 use crate::strategy::volatility_adjusted_momentum::rank_assets_by_volatility_adjusted_momentum;
 use chrono::NaiveDate;
 use std::collections::{HashMap, HashSet};
@@ -161,6 +165,35 @@ pub fn run_volatility_adjusted_momentum_backtest(
     )
 }
 
+/// 运行波动目标轮动回测：当组合波动超出目标时自动降低风险资产占比，并回退到防守资产。
+pub fn run_volatility_target_rotation_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    cfg: RotationBacktestConfig<'_>,
+    top_n: usize,
+    target_volatility: f64,
+    defensive_asset: Option<&str>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        cfg.lookback,
+        cfg.rebalance_freq,
+        cfg.commission,
+        cfg.slippage,
+        cfg.risk,
+        |i, dates, maps| {
+            select_volatility_target_rotation_assets(
+                maps,
+                dates,
+                i,
+                cfg.lookback,
+                top_n,
+                target_volatility,
+                defensive_asset,
+            )
+        },
+    )
+}
+
 /// 运行反转 Bottom N 回测：选择回看期最弱的 N 个资产，做均值回归对照。
 pub fn run_reversal_bottomn_backtest(
     asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
@@ -254,6 +287,35 @@ pub fn run_dual_momentum_backtest(
         cfg.risk,
         |i, dates, maps| {
             select_dual_momentum_assets(
+                maps,
+                dates,
+                i,
+                cfg.lookback,
+                top_n,
+                absolute_momentum_floor,
+                defensive_asset,
+            )
+        },
+    )
+}
+
+/// 运行自适应双动量回测：根据广度动态调整持仓集中度与绝对动量门槛。
+pub fn run_adaptive_dual_momentum_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    cfg: RotationBacktestConfig<'_>,
+    top_n: usize,
+    absolute_momentum_floor: f64,
+    defensive_asset: Option<&str>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        cfg.lookback,
+        cfg.rebalance_freq,
+        cfg.commission,
+        cfg.slippage,
+        cfg.risk,
+        |i, dates, maps| {
+            select_adaptive_dual_momentum_assets(
                 maps,
                 dates,
                 i,
@@ -452,6 +514,33 @@ pub fn run_breakout_timing_single_backtest(
     )
 }
 
+/// 运行单资产跌破择时回测：跌破回看窗口低点则进入防守资产或空仓，否则持有基准资产。
+pub fn run_breakdown_timing_single_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    cfg: RotationBacktestConfig<'_>,
+    benchmark_asset: &str,
+    defensive_asset: Option<&str>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        cfg.lookback,
+        cfg.rebalance_freq,
+        cfg.commission,
+        cfg.slippage,
+        cfg.risk,
+        |i, dates, maps| {
+            select_breakdown_timing_single(
+                maps,
+                dates,
+                i,
+                cfg.lookback,
+                benchmark_asset,
+                defensive_asset,
+            )
+        },
+    )
+}
+
 /// 运行多资产突破轮动回测：从触发突破的资产中按强度择优持有。
 pub fn run_breakout_rotation_topn_backtest(
     asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
@@ -501,6 +590,33 @@ pub fn run_relative_strength_pair_backtest(
                 cfg.lookback,
                 primary_asset,
                 alternate_asset,
+            )
+        },
+    )
+}
+
+/// 运行防守资产对轮动回测：在两类防守资产中择强持有。
+pub fn run_defensive_pair_rotation_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    cfg: RotationBacktestConfig<'_>,
+    primary_defensive_asset: &str,
+    secondary_defensive_asset: &str,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        cfg.lookback,
+        cfg.rebalance_freq,
+        cfg.commission,
+        cfg.slippage,
+        cfg.risk,
+        |i, dates, maps| {
+            select_defensive_pair_rotation_asset(
+                maps,
+                dates,
+                i,
+                cfg.lookback,
+                primary_defensive_asset,
+                secondary_defensive_asset,
             )
         },
     )

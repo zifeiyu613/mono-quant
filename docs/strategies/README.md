@@ -18,12 +18,16 @@
 - `reversal_bottomn`：`docs/strategies/reversal_bottomn.md`
 - `absolute_momentum_single`：`docs/strategies/absolute_momentum_single.md`
 - `dual_momentum`：`docs/strategies/dual_momentum.md`
+- `adaptive_dual_momentum`：`docs/strategies/adaptive_dual_momentum.md`
+- `volatility_target_rotation`：`docs/strategies/volatility_target_rotation.md`
 - `risk_off_rotation`：`docs/strategies/risk_off_rotation.md`
 - `ma_timing_single`：`docs/strategies/ma_timing_single.md`
 - `ma_rotation_topn`：`docs/strategies/ma_rotation_topn.md`
 - `relative_strength_pair`：`docs/strategies/relative_strength_pair.md`
+- `defensive_pair_rotation`：`docs/strategies/defensive_pair_rotation.md`
 - `breakout_rotation_topn`：`docs/strategies/breakout_rotation_topn.md`
 - `breakout_timing_single`：`docs/strategies/breakout_timing_single.md`
+- `breakdown_timing_single`：`docs/strategies/breakdown_timing_single.md`
 
 ## 推荐阅读顺序
 
@@ -37,14 +41,18 @@
 6. `ma_timing_single`
 7. `ma_rotation_topn`
 8. `breakout_timing_single`
-9. `relative_strength_pair`
-10. `momentum_topn`
-11. `volatility_adjusted_momentum`
-12. `breakout_rotation_topn`
-13. `reversal_bottomn`
-14. `dual_momentum`
-15. `risk_off_rotation`
-16. `ma_single`
+9. `breakdown_timing_single`
+10. `relative_strength_pair`
+11. `defensive_pair_rotation`
+12. `momentum_topn`
+13. `volatility_adjusted_momentum`
+14. `breakout_rotation_topn`
+15. `reversal_bottomn`
+16. `dual_momentum`
+17. `adaptive_dual_momentum`
+18. `volatility_target_rotation`
+19. `risk_off_rotation`
+20. `ma_single`
 
 ## 如何使用这些文档
 
@@ -60,15 +68,4 @@
 
 ## 待实现候选
 
-下面这些策略已经进入待实现池，但当前仓库里**还没有实现**：
-
-- `defensive_pair_rotation`
-  - 在两类防守资产之间择强，而不是只固定持有一个防守资产
-- `adaptive_dual_momentum`
-  - 根据广度或波动动态调整 `top_n` / `absolute_momentum_floor`
-- `breakdown_timing_single`
-  - 从“向上突破”扩到“向下跌破即退出”的镜像风险控制版本
-- `volatility_target_rotation`
-  - 在轮动基础上加入简单波动目标，让仓位强弱跟随波动环境变化
-
-这些名字和定位已经先写进文档，后续继续扩策略时会优先从这里选。
+当前待实现池已清空，后续如新增候选会在此处更新。

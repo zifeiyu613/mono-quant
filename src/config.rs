@@ -88,6 +88,7 @@ pub struct AppConfig {
     pub rebalance_freq: Option<usize>,
     pub top_n: Option<usize>,
     pub absolute_momentum_floor: Option<f64>,
+    pub target_volatility: Option<f64>,
     pub lookbacks: Option<Vec<usize>>,
     pub rebalance_freqs: Option<Vec<usize>>,
     pub top_ns: Option<Vec<usize>>,

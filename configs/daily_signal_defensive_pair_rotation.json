@@ -1,0 +1,6 @@
+{
+  "experiment_name": "daily_signal_defensive_pair_rotation_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/defensive_pair_rotation.json",
+  "output_dir": "output/daily_signal_defensive_pair_rotation_v1"
+}

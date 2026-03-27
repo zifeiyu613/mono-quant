@@ -1,0 +1,26 @@
+{
+  "experiment_name": "adaptive_dual_momentum_v1_processed",
+  "strategy": "adaptive_dual_momentum",
+  "asset_files": {
+    "hs300": "data/processed/hs300.csv",
+    "zz500": "data/processed/zz500.csv",
+    "cyb": "data/processed/cyb.csv",
+    "dividend": "data/processed/dividend.csv"
+  },
+  "lookback": 20,
+  "rebalance_freq": 20,
+  "top_n": 2,
+  "absolute_momentum_floor": 0.0,
+  "defensive_asset": "dividend",
+  "commission": 0.0003,
+  "slippage": 0.0001,
+  "risk": {
+    "min_aligned_days": 250,
+    "max_single_asset_weight": 1.0,
+    "max_daily_loss_limit": 0.08,
+    "max_drawdown_limit": 0.15,
+    "max_rebalance_turnover": 0.8,
+    "stop_cooldown_days": 20
+  },
+  "output_dir": "output/adaptive_dual_momentum_v1_processed"
+}

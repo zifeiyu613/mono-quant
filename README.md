@@ -11,9 +11,13 @@
 - 运行单资产绝对动量开关策略
 - 运行波动调整动量轮动策略
 - 运行双动量策略（相对动量 + 绝对动量过滤 + 防守资产回退）
+- 运行自适应双动量策略（广度分层自适应）
+- 运行波动目标轮动策略（波动超标自动降风险）
 - 运行风险开关轮动策略（风险资产最强者 / 防守资产切换）
 - 运行单资产均线择时策略（processed-first）
 - 运行单资产突破择时策略（processed-first）
+- 运行单资产跌破择时策略（processed-first）
+- 运行防守资产对轮动策略（processed-first）
 - 输出 `equity_curve.csv`
 - 输出 `rebalance_log.csv`
 - 输出 `holdings_trace.csv`
@@ -76,62 +80,82 @@ cargo run -- --config configs/buy_hold_equal_weight.json
 cargo run -- --config configs/dual_momentum.json
 ```
 
-### 8. 单资产绝对动量开关（processed-first）
+### 8. 自适应双动量策略（processed-first）
+```bash
+cargo run -- --config configs/adaptive_dual_momentum.json
+```
+
+### 9. 波动目标轮动策略（processed-first）
+```bash
+cargo run -- --config configs/volatility_target_rotation.json
+```
+
+### 10. 单资产绝对动量开关（processed-first）
 ```bash
 cargo run -- --config configs/absolute_momentum_single.json
 ```
 
-### 9. 波动调整动量轮动（processed-first）
+### 11. 波动调整动量轮动（processed-first）
 ```bash
 cargo run -- --config configs/volatility_adjusted_momentum.json
 ```
 
-### 10. 低波动 TopN（processed-first）
+### 12. 低波动 TopN（processed-first）
 ```bash
 cargo run -- --config configs/low_volatility_topn.json
 ```
 
-### 11. 风险开关轮动策略（processed-first）
+### 13. 风险开关轮动策略（processed-first）
 ```bash
 cargo run -- --config configs/risk_off_rotation.json
 ```
 
-### 12. 多资产绝对动量广度（processed-first）
+### 14. 多资产绝对动量广度（processed-first）
 ```bash
 cargo run -- --config configs/absolute_momentum_breadth.json
 ```
 
-### 13. 反转 BottomN 对照策略（processed-first）
+### 15. 反转 BottomN 对照策略（processed-first）
 ```bash
 cargo run -- --config configs/reversal_bottomn.json
 ```
 
-### 14. 单资产均线择时（processed-first）
+### 16. 单资产均线择时（processed-first）
 ```bash
 cargo run -- --config configs/ma_timing_single.json
 ```
 
-### 15. 均线过滤 TopN（processed-first）
+### 17. 均线过滤 TopN（processed-first）
 ```bash
 cargo run -- --config configs/ma_rotation_topn.json
 ```
 
-### 16. 双资产相对强弱切换（processed-first）
+### 18. 双资产相对强弱切换（processed-first）
 ```bash
 cargo run -- --config configs/relative_strength_pair.json
 ```
 
-### 17. 多资产突破轮动（processed-first）
+### 19. 防守资产对轮动（processed-first）
+```bash
+cargo run -- --config configs/defensive_pair_rotation.json
+```
+
+### 20. 多资产突破轮动（processed-first）
 ```bash
 cargo run -- --config configs/breakout_rotation_topn.json
 ```
 
-### 18. 单资产突破择时（processed-first）
+### 21. 单资产突破择时（processed-first）
 ```bash
 cargo run -- --config configs/breakout_timing_single.json
 ```
 
-### 19. 跨策略统一对比（单一 comparison.csv）
+### 22. 单资产跌破择时（processed-first）
+```bash
+cargo run -- --config configs/breakdown_timing_single.json
+```
+
+### 23. 跨策略统一对比（单一 comparison.csv）
 ```bash
 cargo run -- --config configs/strategy_compare_core.json
 ```
@@ -150,7 +174,7 @@ cargo run -- --config configs/strategy_compare_core.json
 cargo run -- --config configs/strategy_compare_extended.json
 ```
 
-### 20. 每日信号输出（P1）
+### 24. 每日信号输出（P1）
 ```bash
 cargo run -- --config configs/daily_signal_dual_momentum.json
 ```
@@ -178,12 +202,16 @@ cargo run -- --config configs/daily_signal_dual_momentum.json
   - `reversal_bottomn`
   - `momentum_topn`
   - `dual_momentum`
+  - `adaptive_dual_momentum`
+  - `volatility_target_rotation`
   - `risk_off_rotation`
   - `ma_timing_single`
   - `ma_rotation_topn`
   - `relative_strength_pair`
+  - `defensive_pair_rotation`
   - `breakout_rotation_topn`
   - `breakout_timing_single`
+  - `breakdown_timing_single`
 
 输出语义：
 - `model_target_positions.csv` 始终保留模型原始目标仓位
@@ -216,13 +244,17 @@ cargo run -- --config configs/daily_signal_dual_momentum.json
 - `configs/daily_signal_reversal_bottomn.json`
 - `configs/daily_signal_momentum_topn.json`
 - `configs/daily_signal_risk_off_rotation.json`
+- `configs/daily_signal_adaptive_dual_momentum.json`
+- `configs/daily_signal_volatility_target_rotation.json`
 - `configs/daily_signal_ma_timing_single.json`
 - `configs/daily_signal_ma_rotation_topn.json`
 - `configs/daily_signal_relative_strength_pair.json`
+- `configs/daily_signal_defensive_pair_rotation.json`
 - `configs/daily_signal_breakout_rotation_topn.json`
 - `configs/daily_signal_breakout_timing_single.json`
+- `configs/daily_signal_breakdown_timing_single.json`
 
-### 21. 批量研究治理输出
+### 25. 批量研究治理输出
 `momentum_batch` 现在支持可选的研究治理配置，会在批量实验完成后额外输出：
 - `hypothesis_assessment.csv`
 - `hypothesis_assessment_in_sample.csv`
@@ -277,6 +309,36 @@ cargo run -- --config configs/momentum_batch_review.json
 - `raw_ms`
 - `mean_ms` / `median_ms` / `p95_ms`
 - `min_ms` / `max_ms` / `stdev_ms`
+
+对比两次基准（优化前后）可使用：
+```bash
+./scripts/benchmark_compare.sh \
+  --baseline output/benchmarks/before.json \
+  --candidate output/benchmarks/after.json \
+  --output output/benchmarks/compare_before_after.json
+```
+
+若要做轻量门禁（回归即失败，适合 CI）：
+```bash
+./scripts/benchmark_compare.sh \
+  --baseline output/benchmarks/before.json \
+  --candidate output/benchmarks/after.json \
+  --max-mean-regress-pct 2 \
+  --max-p95-regress-pct 5
+```
+
+或使用更严格策略（mean/p95 任一变慢即失败）：
+```bash
+./scripts/benchmark_compare.sh \
+  --baseline output/benchmarks/before.json \
+  --candidate output/benchmarks/after.json \
+  --fail-on-regress
+```
+
+输出会给出 `mean_ms` / `median_ms` / `p95_ms` 等指标的：
+- `delta_ms`（绝对变化）
+- `delta_pct`（相对变化，负值表示更快）
+- `speedup_x`（加速比，>1 表示更快）
 
 ## 真实数据工作流
 安装依赖（推荐在本地 `.venv` 中执行）：

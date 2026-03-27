@@ -29,6 +29,7 @@
 - `ma_cross.rs`：单资产均线信号规则
 - `absolute_momentum_breadth.rs`：多资产绝对动量广度规则
 - `absolute_momentum_single.rs`：单资产绝对动量开关规则
+- `adaptive_dual_momentum.rs`：自适应双动量规则（processed-first）
 - `low_volatility_topn.rs`：低波动 TopN 规则
 - `volatility_adjusted_momentum.rs`：波动调整动量排序规则
 - `reversal_bottomn.rs`：BottomN 反转排序规则
@@ -36,6 +37,9 @@
 - `ma_rotation_topn.rs`：均线过滤 TopN 规则（processed-first）
 - `breakout_rotation_topn.rs`：多资产突破轮动规则（processed-first）
 - `breakout_timing_single.rs`：单资产突破择时规则（processed-first）
+- `breakdown_timing_single.rs`：单资产跌破择时规则（processed-first）
+- `defensive_pair_rotation.rs`：防守资产对轮动规则（processed-first）
+- `volatility_target_rotation.rs`：波动目标轮动规则（processed-first）
 - `momentum_topn.rs`：TopN 动量排序规则
 - `dual_momentum.rs`：双动量选资产规则（相对+绝对）
 - `risk_off_rotation.rs`：风险资产 / 防守资产切换规则
@@ -69,7 +73,7 @@
 文件：`src/engine/backtest.rs`
 
 - `run_rotation_backtest`：轮动类策略公共回测内核
-- `run_momentum_topn_backtest` / `run_low_volatility_topn_backtest` / `run_volatility_adjusted_momentum_backtest` / `run_reversal_bottomn_backtest` / `run_buy_hold_*` / `run_absolute_momentum_breadth_backtest` / `run_absolute_momentum_single_backtest` / `run_dual_momentum_backtest` / `run_risk_off_rotation_backtest` / `run_ma_timing_single_backtest` / `run_ma_rotation_topn_backtest` / `run_relative_strength_pair_backtest` / `run_breakout_rotation_topn_backtest` / `run_breakout_timing_single_backtest`：
+- `run_momentum_topn_backtest` / `run_low_volatility_topn_backtest` / `run_volatility_adjusted_momentum_backtest` / `run_reversal_bottomn_backtest` / `run_buy_hold_*` / `run_absolute_momentum_breadth_backtest` / `run_absolute_momentum_single_backtest` / `run_dual_momentum_backtest` / `run_adaptive_dual_momentum_backtest` / `run_volatility_target_rotation_backtest` / `run_risk_off_rotation_backtest` / `run_ma_timing_single_backtest` / `run_ma_rotation_topn_backtest` / `run_relative_strength_pair_backtest` / `run_defensive_pair_rotation_backtest` / `run_breakout_rotation_topn_backtest` / `run_breakout_timing_single_backtest` / `run_breakdown_timing_single_backtest`：
   作为策略包装函数，复用统一内核
 
 ## 3. 新增一个策略的最小步骤
@@ -108,11 +112,15 @@
 - `reversal_bottomn`
 - `momentum_topn`
 - `dual_momentum`
+- `adaptive_dual_momentum`
+- `volatility_target_rotation`
 - `risk_off_rotation`
 - `ma_timing_single`
 - `ma_rotation_topn`
 - `relative_strength_pair`
+- `defensive_pair_rotation`
 - `breakout_rotation_topn`
 - `breakout_timing_single`
+- `breakdown_timing_single`
 
 如果后续要接入完全不同的策略族（例如事件驱动、日内策略），建议新增并行规格类型，而不是把所有策略硬塞进 `RotationStrategySpec`。

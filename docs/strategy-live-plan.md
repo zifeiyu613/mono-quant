@@ -289,6 +289,10 @@
 - 已新增 `relative_strength_pair`
 - 已新增 `breakout_rotation_topn`
 - 已新增 `breakout_timing_single`
+- 已新增 `breakdown_timing_single`
+- 已新增 `defensive_pair_rotation`
+- 已新增 `adaptive_dual_momentum`
+- 已新增 `volatility_target_rotation`
 - 已为每个策略补充独立说明文档
 
 ### P2：运行稳定后再做
@@ -350,22 +354,7 @@
 
 ## 八、待实现策略池
 
-下面这些策略已经列入待实现池，当前**尚未落地**：
-
-1. `defensive_pair_rotation`
-   - 防守资产内部轮动
-2. `adaptive_dual_momentum`
-   - 动态 `top_n` / 动态门槛版双动量
-3. `breakdown_timing_single`
-   - 向下跌破退出型单资产择时
-4. `volatility_target_rotation`
-   - 简单波动目标控制的轮动版本
-
-这些策略之所以保留在待实现池，是因为：
-
-- 它们和当前已实现策略的差异足够明确
-- 不需要改动底层数据结构就能接入
-- 更适合继续扩展“策略矩阵”，而不是重复同一逻辑
+当前待实现池已清空；如后续新增候选，会在这里追加并维护优先级。
 
 ---
 
