@@ -1,5 +1,6 @@
 use super::super::*;
 use crate::strategy::runtime::is_processed_rotation_strategy;
+use std::cmp::Ordering;
 
 pub(super) fn run_strategy_compare(
     compare_cfg: &config::AppConfig,
