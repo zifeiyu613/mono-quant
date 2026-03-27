@@ -1,0 +1,6 @@
+{
+  "experiment_name": "daily_signal_risk_off_rotation_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/risk_off_rotation.json",
+  "output_dir": "output/daily_signal_risk_off_rotation_v1"
+}

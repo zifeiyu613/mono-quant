@@ -1,0 +1,20 @@
+{
+  "experiment_name": "strategy_compare_extended_v1_processed",
+  "strategy": "strategy_compare",
+  "compare_configs": [
+    "configs/buy_hold_single.json",
+    "configs/buy_hold_equal_weight.json",
+    "configs/absolute_momentum_breadth.json",
+    "configs/absolute_momentum_single.json",
+    "configs/volatility_adjusted_momentum.json",
+    "configs/reversal_bottomn.json",
+    "configs/momentum_topn.json",
+    "configs/dual_momentum.json",
+    "configs/risk_off_rotation.json",
+    "configs/ma_timing_single.json",
+    "configs/breakout_rotation_topn.json",
+    "configs/relative_strength_pair.json",
+    "configs/breakout_timing_single.json"
+  ],
+  "output_dir": "output/strategy_compare_extended_v1_processed"
+}

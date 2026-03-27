@@ -40,7 +40,7 @@
 
 ### 当前最短板的部分
 
-- 策略数量太少，核心还是单一动量轮动
+- 策略数量仍然不算多，虽然已经不再只剩单一动量轮动
 - 缺少简单且必要的 benchmark
 - 缺少“研究模式”和“运行模式”的明确边界
 - 缺少每日信号输出与执行留痕
@@ -265,6 +265,30 @@
 5. 增加 `manual_override` 运行层配置
 6. 增加 `execution_log.csv`
 
+当前进度：
+- 已新增 `daily_signal` 运行入口
+- 已输出 `signal_summary.txt`
+- 已输出 `model_target_positions.csv`
+- 已输出 `target_positions.csv`
+- 已输出 `rebalance_instructions.csv`
+- 已输出 `execution_log.csv`
+- 已输出 `manual_override_summary.txt`
+- 已输出 `execution_summary.txt`
+- 已支持通过 `source_config` 复用现有 processed 策略配置
+- 已支持非调仓日直接维持当前模型仓位
+- 已支持风控停机时直接输出 `CASH=100%`
+- 已支持 `manual_override`（`follow_model` / `force_cash` / `custom_weights`）
+- 已支持通过 `execution_input` 做执行回写并生成 `actual_positions.csv`
+- 已新增 `absolute_momentum_single`
+- 已新增 `absolute_momentum_breadth`
+- 已新增 `volatility_adjusted_momentum`
+- 已新增 `reversal_bottomn`
+- 已新增 `ma_timing_single`
+- 已新增 `relative_strength_pair`
+- 已新增 `breakout_rotation_topn`
+- 已新增 `breakout_timing_single`
+- 已为每个策略补充独立说明文档
+
 ### P2：运行稳定后再做
 
 1. 运行日报汇总
@@ -332,4 +356,3 @@
 4. **监控与增强风控**
 
 如果后续出现新需求，除非它直接服务于“策略池扩展”或“运行模式闭环”，否则优先级都排在后面。
-

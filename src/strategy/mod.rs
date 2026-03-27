@@ -1,5 +1,13 @@
+pub mod absolute_momentum_breadth;
+pub mod absolute_momentum_single;
+pub mod breakout_rotation_topn;
+pub mod breakout_timing_single;
 pub mod ma_cross;
+pub mod ma_timing_single;
 pub mod momentum_topn;
+pub mod relative_strength_pair;
+pub mod reversal_bottomn;
 pub mod dual_momentum;
 pub mod runtime;
 pub mod risk_off_rotation;
+pub mod volatility_adjusted_momentum;

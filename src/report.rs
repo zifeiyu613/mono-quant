@@ -1,5 +1,5 @@
 use anyhow::Context;
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
 
@@ -83,6 +83,49 @@ pub struct HypothesisAssessmentRow {
     pub rationale: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TargetPositionRow {
+    pub signal_date: String,
+    pub asset: String,
+    pub target_weight: f64,
+    pub decision_source: String,
+    pub override_reason: String,
+    pub override_owner: String,
+    pub override_decided_at: String,
+    pub note: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RebalanceInstructionRow {
+    pub signal_date: String,
+    pub asset: String,
+    pub action: String,
+    pub current_weight: f64,
+    pub target_weight: f64,
+    pub delta_weight: f64,
+    pub decision_source: String,
+    pub override_reason: String,
+    pub override_owner: String,
+    pub override_decided_at: String,
+    pub note: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ExecutionLogRow {
+    pub signal_date: String,
+    pub asset: String,
+    pub action: String,
+    pub target_weight: f64,
+    pub execution_status: String,
+    pub executed_weight: Option<f64>,
+    pub executed_at: Option<String>,
+    pub decision_source: String,
+    pub override_reason: String,
+    pub override_owner: String,
+    pub override_decided_at: String,
+    pub note: String,
+}
+
 /// 在写入结果文件前，确保输出目录存在。
 pub fn ensure_output_dir(path: &str) -> anyhow::Result<()> {
     fs::create_dir_all(path).with_context(|| format!("创建输出目录失败：{}", path))?;
@@ -98,6 +141,18 @@ pub fn write_csv_rows<T: Serialize>(path: &str, rows: &[T]) -> anyhow::Result<()
     }
     wtr.flush()?;
     Ok(())
+}
+
+/// 从 CSV 读取任意反序列化行数组。
+pub fn read_csv_rows<T: DeserializeOwned>(path: &str) -> anyhow::Result<Vec<T>> {
+    let mut rdr = csv::Reader::from_path(path)
+        .with_context(|| format!("打开 CSV 文件失败：{}", path))?;
+    let mut rows = Vec::new();
+    for result in rdr.deserialize() {
+        let row: T = result.with_context(|| format!("解析 CSV 行失败：{}", path))?;
+        rows.push(row);
+    }
+    Ok(rows)
 }
 
 /// 将组合净值曲线写入 CSV 文件。

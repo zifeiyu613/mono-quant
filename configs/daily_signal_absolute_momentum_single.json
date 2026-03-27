@@ -1,0 +1,6 @@
+{
+  "experiment_name": "daily_signal_absolute_momentum_single_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/absolute_momentum_single.json",
+  "output_dir": "output/daily_signal_absolute_momentum_single_v1"
+}

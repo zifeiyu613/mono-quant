@@ -1,0 +1,6 @@
+{
+  "experiment_name": "daily_signal_ma_timing_single_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/ma_timing_single.json",
+  "output_dir": "output/daily_signal_ma_timing_single_v1"
+}

@@ -10,9 +10,10 @@ use anyhow::{anyhow, Context};
 use chrono::NaiveDate;
 use config::load_config;
 use report::{
-    ensure_output_dir, write_contributions, write_diagnostics, write_equity_curve,
+    ensure_output_dir, read_csv_rows, write_contributions, write_diagnostics, write_equity_curve,
     write_csv_rows, write_experiment_index, write_holdings_trace, write_hypothesis_assessments,
-    write_rebalance_log, EquityRow, ExperimentIndexRow,
+    write_rebalance_log, EquityRow, ExecutionLogRow, ExperimentIndexRow, RebalanceInstructionRow,
+    TargetPositionRow,
 };
 use research::{
     apply_manual_override, assessments_to_rows, assess_hypotheses, build_evidence_summary,
@@ -23,6 +24,7 @@ use research::{
 };
 use serde::Serialize;
 use strategy::runtime::RotationStrategySpec;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -46,6 +48,65 @@ struct BatchResultRow {
     top_contributor: String,
     worst_contributor: String,
     output_dir: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProcessedRunSnapshot {
+    total_return: f64,
+    max_drawdown: f64,
+    trade_count: usize,
+    total_cost_paid: f64,
+    final_equity: f64,
+    halted_by_risk: bool,
+    halt_reason: String,
+    top_contributor: String,
+    worst_contributor: String,
+    output_dir: String,
+}
+
+#[derive(Debug, Serialize)]
+struct StrategyComparisonRow {
+    rank: usize,
+    strategy: String,
+    experiment_name: String,
+    source_config: String,
+    total_return: f64,
+    max_drawdown: f64,
+    trade_count: usize,
+    total_cost_paid: f64,
+    final_equity: f64,
+    halted_by_risk: bool,
+    halt_reason: String,
+    top_contributor: String,
+    worst_contributor: String,
+    output_dir: String,
+}
+
+struct ProcessedStrategyContext {
+    asset_files: HashMap<String, String>,
+    asset_maps: HashMap<String, HashMap<NaiveDate, data::Bar>>,
+    dates: Vec<NaiveDate>,
+    commission: f64,
+    slippage: f64,
+}
+
+#[derive(Debug, Clone)]
+struct DailySignalDecision {
+    model_weights: HashMap<String, f64>,
+    final_weights: HashMap<String, f64>,
+    model_note: String,
+    final_note: String,
+    decision_source: String,
+    override_reason: String,
+    override_owner: String,
+    override_decided_at: String,
+}
+
+#[derive(Debug, Clone)]
+struct ExecutionBackfillResult {
+    rows: Vec<ExecutionLogRow>,
+    summary: String,
+    actual_weights: Option<HashMap<String, f64>>,
 }
 
 fn write_batch_results_csv(path: &str, rows: &[BatchResultRow]) -> anyhow::Result<()> {
@@ -192,7 +253,7 @@ fn render_risk_summary(
     let mut lines = vec![
         "=== 风控摘要 ===".to_string(),
         format!("对齐交易日数量: {}", aligned_days),
-        format!("触发风控次数: {} / {}", halted_count, total_runs),
+        format!("期末处于风控停机: {} / {}", halted_count, total_runs),
     ];
 
     if let Some(risk_cfg) = risk {
@@ -247,6 +308,17 @@ fn summarize_halt_reasons(rows: &[BatchResultRow]) -> Vec<String> {
         .take(3)
         .map(|(reason, count)| format!("{} 次 - {}", count, reason))
         .collect()
+}
+
+fn format_low_drawdown_candidate(rows: &[BatchResultRow]) -> String {
+    rows.iter()
+        .max_by(|a, b| {
+            a.max_drawdown
+                .partial_cmp(&b.max_drawdown)
+                .unwrap_or(Ordering::Equal)
+        })
+        .map(|row| format!("{} ({:.2}%)", row.experiment_id, row.max_drawdown * 100.0))
+        .unwrap_or_else(|| "N/A".to_string())
 }
 
 /// 解析 `--config` 命令行参数，并返回 JSON 配置路径。
@@ -351,11 +423,11 @@ fn log_processed_summary(asset_files: &HashMap<String, String>) -> anyhow::Resul
     Ok(())
 }
 
-fn run_processed_rotation_strategy(
+fn load_processed_strategy_context(
     cfg: &config::AppConfig,
     strategy_spec: &RotationStrategySpec,
-) -> anyhow::Result<()> {
-    ensure_output_dir(&cfg.output_dir)?;
+    emit_logs: bool,
+) -> anyhow::Result<ProcessedStrategyContext> {
     let asset_files = cfg
         .asset_files
         .clone()
@@ -368,20 +440,26 @@ fn run_processed_rotation_strategy(
         .slippage
         .ok_or_else(|| anyhow!("{} 需要提供 slippage", cfg.strategy))?;
 
-    log_info(&format!("正在校验 {} 的 processed 输入", cfg.strategy));
+    if emit_logs {
+        log_info(&format!("正在校验 {} 的 processed 输入", cfg.strategy));
+    }
     validate_processed_inputs(&asset_files)?;
-    if let Some(manifest_path) = infer_manifest_path(&asset_files) {
-        log_info(&format!("使用 processed 对齐清单：{}", manifest_path.display()));
+    if emit_logs {
+        if let Some(manifest_path) = infer_manifest_path(&asset_files) {
+            log_info(&format!("使用 processed 对齐清单：{}", manifest_path.display()));
+        }
+        if let Some(summary_json_path) = infer_summary_json_path(&asset_files) {
+            log_info(&format!("使用 processed 摘要 JSON：{}", summary_json_path.display()));
+        }
+        log_processed_summary(&asset_files)?;
+        log_info(&format!("正在加载 {} 的多资产数据", cfg.strategy));
     }
-    if let Some(summary_json_path) = infer_summary_json_path(&asset_files) {
-        log_info(&format!("使用 processed 摘要 JSON：{}", summary_json_path.display()));
-    }
-    log_processed_summary(&asset_files)?;
 
-    log_info(&format!("正在加载 {} 的多资产数据", cfg.strategy));
     let mut asset_maps = HashMap::new();
     for (name, path) in &asset_files {
-        log_info(&format!("正在加载资产 {}：{}", name, path));
+        if emit_logs {
+            log_info(&format!("正在加载资产 {}：{}", name, path));
+        }
         asset_maps.insert(
             name.clone(),
             data::read_bars_map(path).with_context(|| format!("读取资产 {} 失败：{}", name, path))?,
@@ -419,6 +497,500 @@ fn run_processed_rotation_strategy(
         }
     }
 
+    Ok(ProcessedStrategyContext {
+        asset_files,
+        asset_maps,
+        dates,
+        commission,
+        slippage,
+    })
+}
+
+fn snapshot_weights_for_date(
+    rows: &[report::HoldingTraceRow],
+    signal_date: NaiveDate,
+) -> HashMap<String, f64> {
+    rows.iter()
+        .filter(|row| row.date == signal_date.to_string())
+        .map(|row| (row.asset.clone(), row.weight))
+        .collect()
+}
+
+fn with_cash_weight(weights: &HashMap<String, f64>) -> HashMap<String, f64> {
+    let mut normalized = weights
+        .iter()
+        .filter(|(_, weight)| **weight > 1e-10)
+        .map(|(asset, weight)| (asset.clone(), *weight))
+        .collect::<HashMap<_, _>>();
+    let used_weight: f64 = normalized.values().sum();
+    let cash_weight = (1.0 - used_weight).max(0.0);
+    if normalized.is_empty() {
+        normalized.insert("CASH".to_string(), 1.0);
+    } else if cash_weight > 1e-10 {
+        normalized.insert("CASH".to_string(), cash_weight);
+    }
+    normalized
+}
+
+fn format_weight_map(weights: &HashMap<String, f64>) -> String {
+    let mut entries: Vec<(&String, &f64)> = weights.iter().collect();
+    entries.sort_by(|(asset_a, _), (asset_b, _)| asset_a.cmp(asset_b));
+    entries
+        .into_iter()
+        .map(|(asset, weight)| format!("{}:{:.2}%", asset, weight * 100.0))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn normalize_target_weights(weights: &HashMap<String, f64>) -> anyhow::Result<HashMap<String, f64>> {
+    let mut cleaned = HashMap::new();
+    let mut total_weight = 0.0;
+
+    for (asset, weight) in weights {
+        if *weight < -1e-10 {
+            return Err(anyhow!("目标权重不能为负数：{}={:.4}", asset, weight));
+        }
+        if *weight > 1e-10 {
+            cleaned.insert(asset.clone(), *weight);
+            total_weight += *weight;
+        }
+    }
+
+    if total_weight > 1.0 + 1e-8 {
+        return Err(anyhow!(
+            "目标权重合计超过 100%：当前 {:.2}%",
+            total_weight * 100.0
+        ));
+    }
+
+    Ok(with_cash_weight(&cleaned))
+}
+
+fn apply_daily_manual_override(
+    model_weights: &HashMap<String, f64>,
+    model_note: &str,
+    override_cfg: Option<&config::ManualOverrideConfig>,
+) -> anyhow::Result<DailySignalDecision> {
+    let Some(override_cfg) = override_cfg else {
+        return Ok(DailySignalDecision {
+            model_weights: model_weights.clone(),
+            final_weights: model_weights.clone(),
+            model_note: model_note.to_string(),
+            final_note: model_note.to_string(),
+            decision_source: "model".to_string(),
+            override_reason: String::new(),
+            override_owner: String::new(),
+            override_decided_at: String::new(),
+        });
+    };
+
+    let mode = override_cfg.mode.trim().to_lowercase();
+    let final_weights = match mode.as_str() {
+        "follow_model" => model_weights.clone(),
+        "force_cash" => {
+            let mut cash_only = HashMap::new();
+            cash_only.insert("CASH".to_string(), 1.0);
+            cash_only
+        }
+        "custom_weights" => {
+            let custom_weights = override_cfg
+                .target_weights
+                .as_ref()
+                .ok_or_else(|| anyhow!("manual_override.mode=custom_weights 时必须提供 target_weights"))?;
+            normalize_target_weights(custom_weights)?
+        }
+        other => {
+            return Err(anyhow!(
+                "manual_override.mode 不支持：{}，当前只支持 follow_model / force_cash / custom_weights",
+                other
+            ))
+        }
+    };
+
+    let owner = override_cfg.owner.clone().unwrap_or_default();
+    let decided_at = override_cfg.decided_at.clone().unwrap_or_default();
+    let final_note = format!(
+        "人工覆写已生效（mode={}，reason={}）。模型原始说明：{}",
+        mode, override_cfg.reason, model_note
+    );
+
+    Ok(DailySignalDecision {
+        model_weights: model_weights.clone(),
+        final_weights,
+        model_note: model_note.to_string(),
+        final_note,
+        decision_source: "manual_override".to_string(),
+        override_reason: override_cfg.reason.clone(),
+        override_owner: owner,
+        override_decided_at: decided_at,
+    })
+}
+
+fn build_actual_position_rows(
+    signal_date: NaiveDate,
+    actual_weights: &HashMap<String, f64>,
+    note: &str,
+    decision: &DailySignalDecision,
+) -> Vec<TargetPositionRow> {
+    build_target_position_rows(
+        signal_date,
+        actual_weights,
+        note,
+        &decision.decision_source,
+        &decision.override_reason,
+        &decision.override_owner,
+        &decision.override_decided_at,
+    )
+}
+
+fn equal_weight_target(selected_assets: &[String]) -> HashMap<String, f64> {
+    if selected_assets.is_empty() {
+        let mut cash_only = HashMap::new();
+        cash_only.insert("CASH".to_string(), 1.0);
+        return cash_only;
+    }
+
+    let target_weight = 1.0 / selected_assets.len() as f64;
+    selected_assets
+        .iter()
+        .map(|asset| (asset.clone(), target_weight))
+        .collect()
+}
+
+fn apply_signal_rebalance_guards(
+    current_weights: &HashMap<String, f64>,
+    proposed_target: &HashMap<String, f64>,
+    risk: Option<&config::RiskConfig>,
+) -> (HashMap<String, f64>, Option<String>) {
+    let non_cash_assets = proposed_target
+        .keys()
+        .filter(|asset| asset.as_str() != "CASH")
+        .count();
+    if let Some(max_weight) = risk.and_then(|cfg| cfg.max_single_asset_weight) {
+        let required_assets = required_asset_count_for_max_weight(max_weight);
+        if non_cash_assets > 0 && non_cash_assets < required_assets {
+            return (
+                current_weights.clone(),
+                Some(format!(
+                    "本次信号因单资产权重上限 {:.2}% 约束被跳过，维持当前模型仓位",
+                    max_weight * 100.0
+                )),
+            );
+        }
+    }
+
+    if let Some(limit) = risk.and_then(|cfg| cfg.max_rebalance_turnover) {
+        let turnover_ratio =
+            engine::portfolio::compute_turnover_amount(current_weights, proposed_target);
+        if turnover_ratio > limit {
+            return (
+                current_weights.clone(),
+                Some(format!(
+                    "本次信号因换手率 {:.2}% 超过上限 {:.2}% 被跳过，维持当前模型仓位",
+                    turnover_ratio * 100.0,
+                    limit * 100.0
+                )),
+            );
+        }
+    }
+
+    (proposed_target.clone(), None)
+}
+
+fn build_target_position_rows(
+    signal_date: NaiveDate,
+    target_weights: &HashMap<String, f64>,
+    note: &str,
+    decision_source: &str,
+    override_reason: &str,
+    override_owner: &str,
+    override_decided_at: &str,
+) -> Vec<TargetPositionRow> {
+    let mut assets: Vec<String> = target_weights.keys().cloned().collect();
+    assets.sort();
+    assets
+        .into_iter()
+        .map(|asset| TargetPositionRow {
+            signal_date: signal_date.to_string(),
+            target_weight: *target_weights.get(&asset).unwrap_or(&0.0),
+            asset,
+            decision_source: decision_source.to_string(),
+            override_reason: override_reason.to_string(),
+            override_owner: override_owner.to_string(),
+            override_decided_at: override_decided_at.to_string(),
+            note: note.to_string(),
+        })
+        .collect()
+}
+
+fn build_rebalance_instruction_rows(
+    signal_date: NaiveDate,
+    current_weights: &HashMap<String, f64>,
+    target_weights: &HashMap<String, f64>,
+    note: &str,
+    decision_source: &str,
+    override_reason: &str,
+    override_owner: &str,
+    override_decided_at: &str,
+) -> Vec<RebalanceInstructionRow> {
+    let mut assets: Vec<String> = current_weights
+        .keys()
+        .chain(target_weights.keys())
+        .cloned()
+        .collect();
+    assets.sort();
+    assets.dedup();
+
+    let mut rows = Vec::new();
+    for asset in assets {
+        let current_weight = *current_weights.get(&asset).unwrap_or(&0.0);
+        let target_weight = *target_weights.get(&asset).unwrap_or(&0.0);
+        let delta_weight = target_weight - current_weight;
+        let action = if delta_weight > 1e-8 {
+            "BUY"
+        } else if delta_weight < -1e-8 {
+            "SELL"
+        } else {
+            "HOLD"
+        };
+        rows.push(RebalanceInstructionRow {
+            signal_date: signal_date.to_string(),
+            asset,
+            action: action.to_string(),
+            current_weight,
+            target_weight,
+            delta_weight,
+            decision_source: decision_source.to_string(),
+            override_reason: override_reason.to_string(),
+            override_owner: override_owner.to_string(),
+            override_decided_at: override_decided_at.to_string(),
+            note: note.to_string(),
+        });
+    }
+
+    if rows.is_empty() {
+        rows.push(RebalanceInstructionRow {
+            signal_date: signal_date.to_string(),
+            asset: "CASH".to_string(),
+            action: "HOLD".to_string(),
+            current_weight: 1.0,
+            target_weight: 1.0,
+            delta_weight: 0.0,
+            decision_source: decision_source.to_string(),
+            override_reason: override_reason.to_string(),
+            override_owner: override_owner.to_string(),
+            override_decided_at: override_decided_at.to_string(),
+            note: note.to_string(),
+        });
+    }
+
+    rows
+}
+
+fn build_execution_log_rows(rows: &[RebalanceInstructionRow]) -> Vec<ExecutionLogRow> {
+    rows.iter()
+        .map(|row| ExecutionLogRow {
+            signal_date: row.signal_date.clone(),
+            asset: row.asset.clone(),
+            action: row.action.clone(),
+            target_weight: row.target_weight,
+            execution_status: "pending".to_string(),
+            executed_weight: None,
+            executed_at: None,
+            decision_source: row.decision_source.clone(),
+            override_reason: row.override_reason.clone(),
+            override_owner: row.override_owner.clone(),
+            override_decided_at: row.override_decided_at.clone(),
+            note: row.note.clone(),
+        })
+        .collect()
+}
+
+fn merge_execution_backfill(
+    expected_rows: &[ExecutionLogRow],
+    imported_rows: &[ExecutionLogRow],
+    execution_input_path: &Path,
+) -> anyhow::Result<Vec<ExecutionLogRow>> {
+    if expected_rows.len() != imported_rows.len() {
+        return Err(anyhow!(
+            "execution_input 行数与当前信号模板不一致：模板 {} 行，输入 {} 行，文件：{}",
+            expected_rows.len(),
+            imported_rows.len(),
+            execution_input_path.display()
+        ));
+    }
+
+    let mut imported_map = HashMap::new();
+    for row in imported_rows {
+        imported_map.insert(
+            format!("{}|{}|{}", row.signal_date, row.asset, row.action),
+            row.clone(),
+        );
+    }
+
+    let mut merged = Vec::new();
+    for expected in expected_rows {
+        let key = format!("{}|{}|{}", expected.signal_date, expected.asset, expected.action);
+        let imported = imported_map.get(&key).ok_or_else(|| {
+            anyhow!(
+                "execution_input 缺少对应执行行：{}，文件：{}",
+                key,
+                execution_input_path.display()
+            )
+        })?;
+
+        if (expected.target_weight - imported.target_weight).abs() > 1e-8 {
+            return Err(anyhow!(
+                "execution_input 的 target_weight 与当前信号不一致：{} 当前 {:.6}，输入 {:.6}",
+                key,
+                expected.target_weight,
+                imported.target_weight
+            ));
+        }
+
+        merged.push(imported.clone());
+    }
+
+    Ok(merged)
+}
+
+fn actual_weights_from_execution_rows(rows: &[ExecutionLogRow]) -> anyhow::Result<HashMap<String, f64>> {
+    let mut raw_weights = HashMap::new();
+    for row in rows {
+        let status = row.execution_status.trim().to_lowercase();
+        if matches!(status.as_str(), "filled" | "partial") {
+            if let Some(weight) = row.executed_weight {
+                if weight > 1e-10 {
+                    raw_weights.insert(row.asset.clone(), weight);
+                }
+            }
+        }
+    }
+    normalize_target_weights(&raw_weights)
+}
+
+fn render_manual_override_summary(
+    signal_date: NaiveDate,
+    decision: &DailySignalDecision,
+) -> String {
+    let applied = decision.decision_source == "manual_override";
+    format!(
+        "=== 人工覆写摘要 ===\n信号日期: {}\n是否应用人工覆写: {}\n决策来源: {}\n模型目标仓位: {}\n最终目标仓位: {}\n模型说明: {}\n最终说明: {}\n覆写原因: {}\n覆写人: {}\n覆写时间: {}\n",
+        signal_date,
+        applied,
+        decision.decision_source,
+        format_weight_map(&decision.model_weights),
+        format_weight_map(&decision.final_weights),
+        decision.model_note,
+        decision.final_note,
+        if decision.override_reason.is_empty() {
+            "未应用".to_string()
+        } else {
+            decision.override_reason.clone()
+        },
+        if decision.override_owner.is_empty() {
+            "未填写".to_string()
+        } else {
+            decision.override_owner.clone()
+        },
+        if decision.override_decided_at.is_empty() {
+            "未填写".to_string()
+        } else {
+            decision.override_decided_at.clone()
+        },
+    )
+}
+
+fn render_execution_summary(
+    signal_date: NaiveDate,
+    execution_rows: &[ExecutionLogRow],
+    execution_input_path: Option<&Path>,
+    actual_weights: Option<&HashMap<String, f64>>,
+) -> String {
+    let mut pending = 0usize;
+    let mut filled = 0usize;
+    let mut partial = 0usize;
+    let mut skipped = 0usize;
+    let mut rejected = 0usize;
+    let mut cancelled = 0usize;
+
+    for row in execution_rows {
+        match row.execution_status.trim().to_lowercase().as_str() {
+            "pending" => pending += 1,
+            "filled" => filled += 1,
+            "partial" => partial += 1,
+            "skipped" => skipped += 1,
+            "rejected" => rejected += 1,
+            "cancelled" => cancelled += 1,
+            _ => pending += 1,
+        }
+    }
+
+    format!(
+        "=== 执行回写摘要 ===\n信号日期: {}\n执行输入文件: {}\n执行记录行数: {}\npending: {}\nfilled: {}\npartial: {}\nskipped: {}\nrejected: {}\ncancelled: {}\n回写后的实际仓位: {}\n",
+        signal_date,
+        execution_input_path
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "未提供 execution_input，当前仅生成待执行模板".to_string()),
+        execution_rows.len(),
+        pending,
+        filled,
+        partial,
+        skipped,
+        rejected,
+        cancelled,
+        actual_weights
+            .map(format_weight_map)
+            .unwrap_or_else(|| "N/A".to_string()),
+    )
+}
+
+fn build_execution_backfill_result(
+    template_rows: &[ExecutionLogRow],
+    execution_input_path: Option<&Path>,
+    signal_date: NaiveDate,
+) -> anyhow::Result<ExecutionBackfillResult> {
+    let Some(execution_input_path) = execution_input_path else {
+        return Ok(ExecutionBackfillResult {
+            rows: template_rows.to_vec(),
+            summary: render_execution_summary(signal_date, template_rows, None, None),
+            actual_weights: None,
+        });
+    };
+
+    let imported_rows: Vec<ExecutionLogRow> = read_csv_rows(
+        execution_input_path.to_str().ok_or_else(|| {
+            anyhow!("execution_input 路径不是有效 UTF-8：{}", execution_input_path.display())
+        })?,
+    )?;
+    let merged_rows = merge_execution_backfill(template_rows, &imported_rows, execution_input_path)?;
+    let actual_weights = actual_weights_from_execution_rows(&merged_rows)?;
+    let summary = render_execution_summary(
+        signal_date,
+        &merged_rows,
+        Some(execution_input_path),
+        Some(&actual_weights),
+    );
+
+    Ok(ExecutionBackfillResult {
+        rows: merged_rows,
+        summary,
+        actual_weights: Some(actual_weights),
+    })
+}
+
+fn run_processed_rotation_strategy(
+    cfg: &config::AppConfig,
+    strategy_spec: &RotationStrategySpec,
+) -> anyhow::Result<ProcessedRunSnapshot> {
+    ensure_output_dir(&cfg.output_dir)?;
+    let ctx = load_processed_strategy_context(cfg, strategy_spec, true)?;
+    let asset_files = &ctx.asset_files;
+    let asset_maps = &ctx.asset_maps;
+    let dates = &ctx.dates;
+    let commission = ctx.commission;
+    let slippage = ctx.slippage;
+
     println!(
         "对齐区间：{} -> {}（共 {} 个对齐交易日）",
         dates.first().unwrap(),
@@ -426,7 +998,7 @@ fn run_processed_rotation_strategy(
         dates.len()
     );
     log_info(&format!("正在运行 {} 回测", cfg.strategy));
-    let result = strategy_spec.run(&asset_maps, commission, slippage, cfg.risk.as_ref());
+    let result = strategy_spec.run(asset_maps, commission, slippage, cfg.risk.as_ref());
 
     let equity_rows: Vec<EquityRow> = result
         .equity_curve
@@ -472,7 +1044,7 @@ fn run_processed_rotation_strategy(
     let summary_json_path = infer_summary_json_path(&asset_files).unwrap();
     let summary_txt_path = infer_summary_txt_path(&asset_files).unwrap();
     let diagnostics = format!(
-        "=== 诊断信息 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n资产列表: {}\n{}\n手续费: {}\n滑点: {}\n对齐交易日数量: {}\n开始日期: {}\n结束日期: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n调仓次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n是否触发风控停机: {}\n风控停机原因: {}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n输出文件:\n- equity_curve.csv\n- rebalance_log.csv\n- holdings_trace.csv\n- asset_contribution.csv\n- risk_events.csv（如触发风控）\n",
+        "=== 诊断信息 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n资产列表: {}\n{}\n手续费: {}\n滑点: {}\n对齐交易日数量: {}\n开始日期: {}\n结束日期: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n调仓次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n期末是否处于风控停机: {}\n期末停机原因: {}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n输出文件:\n- equity_curve.csv\n- rebalance_log.csv\n- holdings_trace.csv\n- asset_contribution.csv\n- risk_events.csv（如触发风控）\n",
         cfg.experiment_name,
         cfg.strategy,
         manifest_path.display(),
@@ -506,9 +1078,461 @@ fn run_processed_rotation_strategy(
     println!("调仓次数：{}", result.summary.trade_count);
     println!("总成本：{:.6}", result.summary.total_cost_paid);
     println!("期末净值：{:.4}", result.summary.final_equity);
-    println!("是否触发风控停机：{}", result.summary.halted_by_risk);
+    println!("期末是否处于风控停机：{}", result.summary.halted_by_risk);
     println!("贡献最高资产：{:?}", result.top_contributor);
     println!("贡献最低资产：{:?}", result.worst_contributor);
+    Ok(ProcessedRunSnapshot {
+        total_return: result.summary.total_return,
+        max_drawdown: result.summary.max_drawdown,
+        trade_count: result.summary.trade_count,
+        total_cost_paid: result.summary.total_cost_paid,
+        final_equity: result.summary.final_equity,
+        halted_by_risk: result.summary.halted_by_risk,
+        halt_reason: result.summary.halt_reason.unwrap_or_else(|| "未触发".to_string()),
+        top_contributor: result
+            .top_contributor
+            .clone()
+            .map(|item| item.0)
+            .unwrap_or_default(),
+        worst_contributor: result
+            .worst_contributor
+            .clone()
+            .map(|item| item.0)
+            .unwrap_or_default(),
+        output_dir: cfg.output_dir.clone(),
+    })
+}
+
+fn resolve_child_config_path(base_config_path: &str, child_path: &str) -> PathBuf {
+    let path = Path::new(child_path);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let base_dir = Path::new(base_config_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let resolved = base_dir.join(path);
+    if resolved.exists() {
+        resolved
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn run_strategy_compare(compare_cfg: &config::AppConfig, compare_config_path: &str) -> anyhow::Result<()> {
+    ensure_output_dir(&compare_cfg.output_dir)?;
+    fs::copy(
+        compare_config_path,
+        format!("{}/config_snapshot.json", compare_cfg.output_dir),
+    )
+    .with_context(|| {
+        format!(
+            "写入对比配置快照失败：{}/config_snapshot.json",
+            compare_cfg.output_dir
+        )
+    })?;
+
+    let compare_configs = compare_cfg
+        .compare_configs
+        .clone()
+        .ok_or_else(|| anyhow!("strategy_compare 需要提供 compare_configs"))?;
+    if compare_configs.is_empty() {
+        return Err(anyhow!("strategy_compare 的 compare_configs 不能为空"));
+    }
+
+    let mut rows: Vec<StrategyComparisonRow> = Vec::new();
+    for config_ref in compare_configs {
+        let resolved_path = resolve_child_config_path(compare_config_path, &config_ref);
+        let resolved_str = resolved_path.to_string_lossy().to_string();
+        log_info(&format!("正在加载对比策略配置：{}", resolved_path.display()));
+        let sub_cfg = load_config(&resolved_str)
+            .with_context(|| format!("读取策略配置失败：{}", resolved_path.display()))?;
+        match sub_cfg.strategy.as_str() {
+            "buy_hold_single"
+            | "buy_hold_equal_weight"
+            | "absolute_momentum_breadth"
+            | "absolute_momentum_single"
+            | "volatility_adjusted_momentum"
+            | "reversal_bottomn"
+            | "momentum_topn"
+            | "dual_momentum"
+            | "risk_off_rotation"
+            | "ma_timing_single"
+            | "breakout_rotation_topn"
+            | "relative_strength_pair"
+            | "breakout_timing_single" => {}
+            other => {
+                return Err(anyhow!(
+                    "strategy_compare 目前只支持 processed-first 策略配置，当前为：{}",
+                    other
+                ))
+            }
+        }
+        let strategy_spec = RotationStrategySpec::from_app_config(&sub_cfg)
+            .with_context(|| format!("解析策略配置失败：{}", resolved_path.display()))?;
+        let snapshot = run_processed_rotation_strategy(&sub_cfg, &strategy_spec)
+            .with_context(|| format!("执行策略失败：{}", resolved_path.display()))?;
+        rows.push(StrategyComparisonRow {
+            rank: 0,
+            strategy: sub_cfg.strategy.clone(),
+            experiment_name: sub_cfg.experiment_name.clone(),
+            source_config: resolved_path.display().to_string(),
+            total_return: snapshot.total_return,
+            max_drawdown: snapshot.max_drawdown,
+            trade_count: snapshot.trade_count,
+            total_cost_paid: snapshot.total_cost_paid,
+            final_equity: snapshot.final_equity,
+            halted_by_risk: snapshot.halted_by_risk,
+            halt_reason: snapshot.halt_reason,
+            top_contributor: snapshot.top_contributor,
+            worst_contributor: snapshot.worst_contributor,
+            output_dir: snapshot.output_dir,
+        });
+    }
+
+    rows.sort_by(|a, b| {
+        a.halted_by_risk
+            .cmp(&b.halted_by_risk)
+            .then_with(|| {
+                b.total_return
+                    .partial_cmp(&a.total_return)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| {
+                b.max_drawdown
+                    .partial_cmp(&a.max_drawdown)
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| a.strategy.cmp(&b.strategy))
+    });
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.rank = index + 1;
+    }
+
+    write_csv_rows(&format!("{}/comparison.csv", compare_cfg.output_dir), &rows)?;
+    let halted_count = rows.iter().filter(|row| row.halted_by_risk).count();
+    let top_choice = rows
+        .first()
+        .map(|row| {
+            format!(
+                "{} / {}（收益 {:.2}%，回撤 {:.2}%，风控停机: {}）",
+                row.strategy,
+                row.experiment_name,
+                row.total_return * 100.0,
+                row.max_drawdown * 100.0,
+                row.halted_by_risk
+            )
+        })
+        .unwrap_or_else(|| "N/A".to_string());
+    let summary = format!(
+        "=== 跨策略对比摘要 ===\n实验名称: {}\n策略类型: strategy_compare\n对比策略数量: {}\n期末处于风控停机的策略数: {}\n排序规则: 先看期末是否处于风控停机（未停机优先），再看总收益（高优先），再看最大回撤（高优先，即回撤更小）\n第一优先候选: {}\n输出文件:\n- {}/comparison.csv\n- {}/comparison_summary.txt\n- {}/config_snapshot.json\n",
+        compare_cfg.experiment_name,
+        rows.len(),
+        halted_count,
+        top_choice,
+        compare_cfg.output_dir,
+        compare_cfg.output_dir,
+        compare_cfg.output_dir,
+    );
+    write_diagnostics(
+        &format!("{}/comparison_summary.txt", compare_cfg.output_dir),
+        &summary,
+    )?;
+
+    println!("=== 跨策略统一对比摘要 ===");
+    println!("策略数量：{}", rows.len());
+    println!("期末处于风控停机的策略数：{}", halted_count);
+    println!("第一优先候选：{}", top_choice);
+    println!("已写入：{}/comparison.csv", compare_cfg.output_dir);
+    println!("已写入：{}/comparison_summary.txt", compare_cfg.output_dir);
+    println!("已写入：{}/config_snapshot.json", compare_cfg.output_dir);
+    Ok(())
+}
+
+fn run_daily_signal(daily_cfg: &config::AppConfig, daily_config_path: &str) -> anyhow::Result<()> {
+    ensure_output_dir(&daily_cfg.output_dir)?;
+    fs::copy(
+        daily_config_path,
+        format!("{}/config_snapshot.json", daily_cfg.output_dir),
+    )
+    .with_context(|| {
+        format!(
+            "写入 daily_signal 配置快照失败：{}/config_snapshot.json",
+            daily_cfg.output_dir
+        )
+    })?;
+
+    let source_config_ref = daily_cfg
+        .source_config
+        .clone()
+        .ok_or_else(|| anyhow!("daily_signal 需要提供 source_config"))?;
+    let source_config_path = resolve_child_config_path(daily_config_path, &source_config_ref);
+    let source_config_str = source_config_path.to_string_lossy().to_string();
+    log_info(&format!(
+        "正在加载 daily_signal 的来源策略配置：{}",
+        source_config_path.display()
+    ));
+    let source_cfg = load_config(&source_config_str)
+        .with_context(|| format!("读取来源策略配置失败：{}", source_config_path.display()))?;
+    let source_strategy_spec = RotationStrategySpec::from_app_config(&source_cfg)
+        .with_context(|| format!("解析来源策略配置失败：{}", source_config_path.display()))?;
+    match source_cfg.strategy.as_str() {
+        "buy_hold_single"
+        | "buy_hold_equal_weight"
+        | "absolute_momentum_breadth"
+        | "absolute_momentum_single"
+        | "volatility_adjusted_momentum"
+        | "reversal_bottomn"
+        | "dual_momentum"
+        | "risk_off_rotation"
+        | "ma_timing_single"
+        | "breakout_rotation_topn"
+        | "relative_strength_pair"
+        | "breakout_timing_single"
+        | "momentum_topn" => {}
+        other => {
+            return Err(anyhow!(
+                "daily_signal 目前只支持 processed 轮动策略，当前来源策略为：{}",
+                other
+            ))
+        }
+    }
+
+    fs::copy(
+        &source_config_path,
+        format!("{}/source_config_snapshot.json", daily_cfg.output_dir),
+    )
+    .with_context(|| {
+        format!(
+            "写入来源策略配置快照失败：{}/source_config_snapshot.json",
+            daily_cfg.output_dir
+        )
+    })?;
+
+    let ctx = load_processed_strategy_context(&source_cfg, &source_strategy_spec, true)?;
+    println!(
+        "对齐区间：{} -> {}（共 {} 个对齐交易日）",
+        ctx.dates.first().unwrap(),
+        ctx.dates.last().unwrap(),
+        ctx.dates.len()
+    );
+    log_info(&format!("正在运行 {} 的最新信号计算", source_cfg.strategy));
+    let result = source_strategy_spec.run(
+        &ctx.asset_maps,
+        ctx.commission,
+        ctx.slippage,
+        source_cfg.risk.as_ref(),
+    );
+
+    let signal_date = *ctx.dates.last().unwrap();
+    let signal_index = ctx.dates.len() - 1;
+    let current_weights =
+        with_cash_weight(&snapshot_weights_for_date(&result.holdings_trace, signal_date));
+    let rebalance_due = source_strategy_spec.is_rebalance_due(signal_index);
+    let mut signal_note = if result.summary.halted_by_risk {
+        result
+            .summary
+            .halt_reason
+            .clone()
+            .unwrap_or_else(|| "当前处于风控停机，维持空仓".to_string())
+    } else if rebalance_due {
+        "当前为调仓信号日，已生成下一交易日目标仓位".to_string()
+    } else {
+        "当前不是调仓信号日，维持当前模型仓位".to_string()
+    };
+
+    let model_target_weights = if result.summary.halted_by_risk {
+        let mut cash_only = HashMap::new();
+        cash_only.insert("CASH".to_string(), 1.0);
+        cash_only
+    } else if rebalance_due {
+        let selected_assets = source_strategy_spec.preview_selected_assets(
+            &ctx.asset_maps,
+            &ctx.dates,
+            signal_index,
+            source_cfg.risk.as_ref(),
+        );
+        let proposed_target = equal_weight_target(&selected_assets);
+        let (effective_target, guard_note) = apply_signal_rebalance_guards(
+            &current_weights,
+            &proposed_target,
+            source_cfg.risk.as_ref(),
+        );
+        if let Some(note) = guard_note {
+            signal_note = note;
+        }
+        effective_target
+    } else {
+        current_weights.clone()
+    };
+
+    let decision = apply_daily_manual_override(
+        &model_target_weights,
+        &signal_note,
+        daily_cfg.manual_override.as_ref(),
+    )?;
+    let model_target_rows = build_target_position_rows(
+        signal_date,
+        &decision.model_weights,
+        &decision.model_note,
+        "model",
+        "",
+        "",
+        "",
+    );
+    let target_rows = build_target_position_rows(
+        signal_date,
+        &decision.final_weights,
+        &decision.final_note,
+        &decision.decision_source,
+        &decision.override_reason,
+        &decision.override_owner,
+        &decision.override_decided_at,
+    );
+    let instruction_rows = build_rebalance_instruction_rows(
+        signal_date,
+        &current_weights,
+        &decision.final_weights,
+        &decision.final_note,
+        &decision.decision_source,
+        &decision.override_reason,
+        &decision.override_owner,
+        &decision.override_decided_at,
+    );
+    let execution_template_rows = build_execution_log_rows(&instruction_rows);
+    let execution_input_path = daily_cfg
+        .execution_input
+        .as_ref()
+        .map(|path| resolve_child_config_path(daily_config_path, path));
+    let execution_backfill = build_execution_backfill_result(
+        &execution_template_rows,
+        execution_input_path.as_deref(),
+        signal_date,
+    )?;
+
+    write_csv_rows(
+        &format!("{}/model_target_positions.csv", daily_cfg.output_dir),
+        &model_target_rows,
+    )?;
+    write_csv_rows(
+        &format!("{}/target_positions.csv", daily_cfg.output_dir),
+        &target_rows,
+    )?;
+    write_csv_rows(
+        &format!("{}/rebalance_instructions.csv", daily_cfg.output_dir),
+        &instruction_rows,
+    )?;
+    write_csv_rows(
+        &format!("{}/execution_log.csv", daily_cfg.output_dir),
+        &execution_backfill.rows,
+    )?;
+    if let Some(actual_weights) = &execution_backfill.actual_weights {
+        let actual_rows = build_actual_position_rows(
+            signal_date,
+            actual_weights,
+            "来自 execution_input 的执行回写结果",
+            &decision,
+        );
+        write_csv_rows(
+            &format!("{}/actual_positions.csv", daily_cfg.output_dir),
+            &actual_rows,
+        )?;
+    }
+    write_diagnostics(
+        &format!("{}/manual_override_summary.txt", daily_cfg.output_dir),
+        &render_manual_override_summary(signal_date, &decision),
+    )?;
+    write_diagnostics(
+        &format!("{}/execution_summary.txt", daily_cfg.output_dir),
+        &execution_backfill.summary,
+    )?;
+
+    let latest_rebalance = result.rebalances.last();
+    let manifest_path = infer_manifest_path(&ctx.asset_files).unwrap();
+    let summary_json_path = infer_summary_json_path(&ctx.asset_files).unwrap();
+    let summary_txt_path = infer_summary_txt_path(&ctx.asset_files).unwrap();
+    let current_positions_text = format_weight_map(&current_weights);
+    let model_target_positions_text = format_weight_map(&decision.model_weights);
+    let target_positions_text = format_weight_map(&decision.final_weights);
+    let summary = format!(
+        "=== 每日信号摘要 ===\n实验名称: {}\n运行模式: daily_signal\n来源策略配置: {}\n来源实验名称: {}\n来源策略类型: {}\n信号日期: {}\n是否调仓信号日: {}\n当前模型仓位: {}\n模型目标仓位: {}\n最终目标仓位: {}\n模型信号说明: {}\n最终执行说明: {}\n决策来源: {}\n人工覆写原因: {}\n人工覆写人: {}\n人工覆写时间: {}\n执行回写文件: {}\n期末是否处于风控停机: {}\n期末停机原因: {}\n最近一次调仓日期: {}\n最近一次调仓目标: {}\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n输出文件:\n- {}/signal_summary.txt\n- {}/model_target_positions.csv\n- {}/target_positions.csv\n- {}/rebalance_instructions.csv\n- {}/execution_log.csv\n- {}/manual_override_summary.txt\n- {}/execution_summary.txt\n- {}/actual_positions.csv（如提供 execution_input）\n- {}/config_snapshot.json\n- {}/source_config_snapshot.json\n",
+        daily_cfg.experiment_name,
+        source_config_path.display(),
+        source_cfg.experiment_name,
+        source_cfg.strategy,
+        signal_date,
+        rebalance_due,
+        current_positions_text,
+        model_target_positions_text,
+        target_positions_text,
+        decision.model_note,
+        decision.final_note,
+        decision.decision_source,
+        if decision.override_reason.is_empty() {
+            "未应用".to_string()
+        } else {
+            decision.override_reason.clone()
+        },
+        if decision.override_owner.is_empty() {
+            "未填写".to_string()
+        } else {
+            decision.override_owner.clone()
+        },
+        if decision.override_decided_at.is_empty() {
+            "未填写".to_string()
+        } else {
+            decision.override_decided_at.clone()
+        },
+        execution_input_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "未提供".to_string()),
+        result.summary.halted_by_risk,
+        result
+            .summary
+            .halt_reason
+            .clone()
+            .unwrap_or_else(|| "未触发".to_string()),
+        latest_rebalance
+            .map(|row| row.date.clone())
+            .unwrap_or_else(|| "N/A".to_string()),
+        latest_rebalance
+            .map(|row| row.selected_assets.clone())
+            .unwrap_or_else(|| "N/A".to_string()),
+        manifest_path.display(),
+        summary_json_path.display(),
+        summary_txt_path.display(),
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+        daily_cfg.output_dir,
+    );
+    write_diagnostics(&format!("{}/signal_summary.txt", daily_cfg.output_dir), &summary)?;
+
+    println!("=== 每日信号摘要 ===");
+    println!("来源策略：{}", source_cfg.strategy);
+    println!("信号日期：{}", signal_date);
+    println!("是否调仓信号日：{}", rebalance_due);
+    println!("决策来源：{}", decision.decision_source);
+    println!("目标仓位：{}", target_positions_text);
+    println!("信号说明：{}", decision.final_note);
+    println!("已写入：{}/signal_summary.txt", daily_cfg.output_dir);
+    println!("已写入：{}/model_target_positions.csv", daily_cfg.output_dir);
+    println!("已写入：{}/target_positions.csv", daily_cfg.output_dir);
+    println!("已写入：{}/rebalance_instructions.csv", daily_cfg.output_dir);
+    println!("已写入：{}/execution_log.csv", daily_cfg.output_dir);
+    println!("已写入：{}/manual_override_summary.txt", daily_cfg.output_dir);
+    println!("已写入：{}/execution_summary.txt", daily_cfg.output_dir);
+    if execution_backfill.actual_weights.is_some() {
+        println!("已写入：{}/actual_positions.csv", daily_cfg.output_dir);
+    }
     Ok(())
 }
 
@@ -598,11 +1622,25 @@ fn main() -> anyhow::Result<()> {
         }
         "buy_hold_single"
         | "buy_hold_equal_weight"
+        | "absolute_momentum_breadth"
+        | "absolute_momentum_single"
+        | "volatility_adjusted_momentum"
+        | "reversal_bottomn"
         | "dual_momentum"
         | "risk_off_rotation"
+        | "ma_timing_single"
+        | "breakout_rotation_topn"
+        | "relative_strength_pair"
+        | "breakout_timing_single"
         | "momentum_topn" => {
             let strategy_spec = RotationStrategySpec::from_app_config(&cfg)?;
-            run_processed_rotation_strategy(&cfg, &strategy_spec)?;
+            let _ = run_processed_rotation_strategy(&cfg, &strategy_spec)?;
+        }
+        "strategy_compare" => {
+            run_strategy_compare(&cfg, &config_path)?;
+        }
+        "daily_signal" => {
+            run_daily_signal(&cfg, &config_path)?;
         }
         "momentum_batch" => {
             let asset_files = cfg
@@ -743,7 +1781,7 @@ fn main() -> anyhow::Result<()> {
                                 .unwrap_or_default();
 
                             let diag = format!(
-                                "实验ID: {}\n数据层: processed\nlookback: {}\nrebalance_freq: {}\ntop_n: {}\n单位成本: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n交易次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n是否触发风控停机: {}\n风控停机原因: {}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n",
+                                "实验ID: {}\n数据层: processed\nlookback: {}\nrebalance_freq: {}\ntop_n: {}\n单位成本: {}\n总收益: {:.2}%\n最大回撤: {:.2}%\n交易次数: {}\n总成本: {:.6}\n期末净值: {:.4}\n期末是否处于风控停机: {}\n期末停机原因: {}\n贡献最高资产: {:?}\n贡献最低资产: {:?}\n",
                                 exp_id,
                                 lookback,
                                 rebalance_freq,
@@ -926,11 +1964,7 @@ fn main() -> anyhow::Result<()> {
                 .map(|r| format!("{} ({:.2}%)", r.experiment_id, r.total_return * 100.0))
                 .collect();
             let halted_count = rows.iter().filter(|row| row.halted_by_risk).count();
-            let low_drawdown_candidate = rows
-                .iter()
-                .min_by(|a, b| a.max_drawdown.partial_cmp(&b.max_drawdown).unwrap())
-                .map(|r| format!("{} ({:.2}%)", r.experiment_id, r.max_drawdown * 100.0))
-                .unwrap_or_else(|| "N/A".to_string());
+            let low_drawdown_candidate = format_low_drawdown_candidate(&rows);
             let manifest_path = infer_manifest_path(&asset_files).unwrap();
             let summary_json_path = infer_summary_json_path(&asset_files).unwrap();
             let summary_txt_path = infer_summary_txt_path(&asset_files).unwrap();
@@ -1078,7 +2112,7 @@ fn main() -> anyhow::Result<()> {
             }
 
             let summary = format!(
-                "=== 批量实验摘要 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n实验数量: {}\n触发风控实验数: {}\n收益前三组合: {}\n最低回撤候选: {}\n配置快照: {}/config_snapshot.json\n结果总表: {}/batch_results.csv\n实验索引: {}/experiment_index.csv\n",
+                "=== 批量实验摘要 ===\n实验名称: {}\n策略类型: {}\n数据层: processed\nprocessed 清单: {}\nprocessed 摘要 JSON: {}\nprocessed 摘要 TXT: {}\n实验数量: {}\n期末处于风控停机的实验数: {}\n收益前三组合: {}\n最低回撤候选: {}\n配置快照: {}/config_snapshot.json\n结果总表: {}/batch_results.csv\n实验索引: {}/experiment_index.csv\n",
                 cfg.experiment_name,
                 cfg.strategy,
                 manifest_path.display(),
@@ -1166,6 +2200,31 @@ fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    fn batch_row(experiment_id: &str, max_drawdown: f64) -> BatchResultRow {
+        BatchResultRow {
+            experiment_id: experiment_id.to_string(),
+            lookback: 20,
+            rebalance_freq: 20,
+            top_n: 2,
+            unit_cost: 0.0004,
+            total_return: 0.0,
+            max_drawdown,
+            trade_count: 0,
+            total_cost_paid: 0.0,
+            final_equity: 1.0,
+            halted_by_risk: false,
+            halt_event_type: String::new(),
+            halt_reason: String::new(),
+            top_contributor: String::new(),
+            worst_contributor: String::new(),
+            output_dir: String::new(),
+        }
+    }
+
+    fn weight_map(items: &[(&str, f64)]) -> HashMap<String, f64> {
+        items.iter().map(|(asset, weight)| ((*asset).to_string(), *weight)).collect()
+    }
+
     #[test]
     fn validate_risk_config_rejects_insufficient_asset_universe() {
         let risk = config::RiskConfig {
@@ -1196,5 +2255,171 @@ mod tests {
 
         let err = validate_risk_config(Some(&risk), Some(4)).unwrap_err();
         assert!(err.to_string().contains("risk.stop_cooldown_days"));
+    }
+
+    #[test]
+    fn low_drawdown_candidate_prefers_shallower_drawdown() {
+        let rows = vec![batch_row("deep", -0.25), batch_row("shallow", -0.08)];
+
+        let candidate = format_low_drawdown_candidate(&rows);
+
+        assert!(candidate.contains("shallow"));
+        assert!(candidate.contains("-8.00%"));
+    }
+
+    #[test]
+    fn with_cash_weight_adds_cash_for_empty_positions() {
+        let weights = with_cash_weight(&HashMap::new());
+
+        assert_eq!(weights.get("CASH"), Some(&1.0));
+    }
+
+    #[test]
+    fn format_weight_map_orders_assets_stably() {
+        let weights = weight_map(&[("zz500", 0.3), ("hs300", 0.5), ("CASH", 0.2)]);
+
+        let rendered = format_weight_map(&weights);
+
+        assert_eq!(rendered, "CASH:20.00%, hs300:50.00%, zz500:30.00%");
+    }
+
+    #[test]
+    fn apply_signal_rebalance_guards_skips_when_turnover_too_high() {
+        let current = weight_map(&[("hs300", 1.0)]);
+        let proposed = weight_map(&[("cyb", 1.0)]);
+        let risk = config::RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: None,
+            max_daily_loss_limit: None,
+            max_drawdown_limit: None,
+            max_rebalance_turnover: Some(0.2),
+            stop_cooldown_days: None,
+        };
+
+        let (effective, note) = apply_signal_rebalance_guards(&current, &proposed, Some(&risk));
+
+        assert_eq!(effective, current);
+        assert!(note.unwrap().contains("换手率"));
+    }
+
+    #[test]
+    fn manual_override_force_cash_replaces_model_target() {
+        let model = weight_map(&[("hs300", 1.0)]);
+        let override_cfg = config::ManualOverrideConfig {
+            mode: "force_cash".to_string(),
+            reason: "人工转为空仓".to_string(),
+            owner: Some("ops".to_string()),
+            decided_at: Some("2026-03-27 09:30:00".to_string()),
+            target_weights: None,
+        };
+
+        let decision =
+            apply_daily_manual_override(&model, "模型建议持有 hs300", Some(&override_cfg)).unwrap();
+
+        assert_eq!(decision.decision_source, "manual_override");
+        assert_eq!(decision.final_weights.get("CASH"), Some(&1.0));
+        assert!(decision.final_note.contains("人工覆写已生效"));
+    }
+
+    #[test]
+    fn actual_weights_from_execution_rows_uses_filled_rows() {
+        let rows = vec![
+            ExecutionLogRow {
+                signal_date: "2026-03-27".to_string(),
+                asset: "hs300".to_string(),
+                action: "BUY".to_string(),
+                target_weight: 0.6,
+                execution_status: "filled".to_string(),
+                executed_weight: Some(0.55),
+                executed_at: Some("2026-03-27 10:01:00".to_string()),
+                decision_source: "manual_override".to_string(),
+                override_reason: "人工降仓".to_string(),
+                override_owner: "ops".to_string(),
+                override_decided_at: "2026-03-27 09:30:00".to_string(),
+                note: "test".to_string(),
+            },
+            ExecutionLogRow {
+                signal_date: "2026-03-27".to_string(),
+                asset: "dividend".to_string(),
+                action: "BUY".to_string(),
+                target_weight: 0.4,
+                execution_status: "partial".to_string(),
+                executed_weight: Some(0.25),
+                executed_at: Some("2026-03-27 10:02:00".to_string()),
+                decision_source: "manual_override".to_string(),
+                override_reason: "人工降仓".to_string(),
+                override_owner: "ops".to_string(),
+                override_decided_at: "2026-03-27 09:30:00".to_string(),
+                note: "test".to_string(),
+            },
+        ];
+
+        let actual = actual_weights_from_execution_rows(&rows).unwrap();
+
+        assert_eq!(actual.get("hs300"), Some(&0.55));
+        assert_eq!(actual.get("dividend"), Some(&0.25));
+        assert!((actual.get("CASH").copied().unwrap_or_default() - 0.20).abs() < 1e-12);
+    }
+
+    #[test]
+    fn merge_execution_backfill_requires_matching_template_rows() {
+        let expected = vec![ExecutionLogRow {
+            signal_date: "2026-03-27".to_string(),
+            asset: "hs300".to_string(),
+            action: "BUY".to_string(),
+            target_weight: 1.0,
+            execution_status: "pending".to_string(),
+            executed_weight: None,
+            executed_at: None,
+            decision_source: "model".to_string(),
+            override_reason: String::new(),
+            override_owner: String::new(),
+            override_decided_at: String::new(),
+            note: "test".to_string(),
+        }];
+        let imported = vec![ExecutionLogRow {
+            signal_date: "2026-03-27".to_string(),
+            asset: "cyb".to_string(),
+            action: "BUY".to_string(),
+            target_weight: 1.0,
+            execution_status: "filled".to_string(),
+            executed_weight: Some(1.0),
+            executed_at: Some("2026-03-27 10:00:00".to_string()),
+            decision_source: "model".to_string(),
+            override_reason: String::new(),
+            override_owner: String::new(),
+            override_decided_at: String::new(),
+            note: "test".to_string(),
+        }];
+
+        let err = merge_execution_backfill(
+            &expected,
+            &imported,
+            std::path::Path::new("output/mock_execution_input.csv"),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("缺少对应执行行"));
+    }
+
+    #[test]
+    fn build_rebalance_instruction_rows_marks_weight_changes() {
+        let current = weight_map(&[("hs300", 1.0)]);
+        let target = weight_map(&[("cyb", 0.5), ("dividend", 0.5)]);
+
+        let rows = build_rebalance_instruction_rows(
+            NaiveDate::parse_from_str("2026-03-27", "%Y-%m-%d").unwrap(),
+            &current,
+            &target,
+            "test",
+            "model",
+            "",
+            "",
+            "",
+        );
+
+        assert!(rows.iter().any(|row| row.asset == "hs300" && row.action == "SELL"));
+        assert!(rows.iter().any(|row| row.asset == "cyb" && row.action == "BUY"));
+        assert!(rows.iter().any(|row| row.asset == "dividend" && row.action == "BUY"));
     }
 }

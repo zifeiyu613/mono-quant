@@ -1,0 +1,6 @@
+{
+  "experiment_name": "daily_signal_volatility_adjusted_momentum_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/volatility_adjusted_momentum.json",
+  "output_dir": "output/daily_signal_volatility_adjusted_momentum_v1"
+}

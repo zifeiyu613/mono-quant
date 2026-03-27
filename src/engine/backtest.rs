@@ -3,9 +3,17 @@ use crate::data::{intersect_dates, Bar};
 use crate::engine::portfolio::compute_turnover_amount;
 use crate::metrics::max_drawdown;
 use crate::report::{ContributionRow, HoldingTraceRow, RebalanceRow, RiskEventRow};
+use crate::strategy::absolute_momentum_breadth::select_absolute_momentum_breadth;
+use crate::strategy::absolute_momentum_single::select_absolute_momentum_single;
+use crate::strategy::breakout_rotation_topn::select_breakout_rotation_topn;
+use crate::strategy::breakout_timing_single::select_breakout_timing_single;
 use crate::strategy::dual_momentum::select_dual_momentum_assets;
+use crate::strategy::ma_timing_single::select_ma_timing_single;
 use crate::strategy::momentum_topn::rank_assets_by_lookback;
+use crate::strategy::relative_strength_pair::select_relative_strength_pair;
 use crate::strategy::risk_off_rotation::select_risk_off_rotation_asset;
+use crate::strategy::reversal_bottomn::rank_assets_by_reversal;
+use crate::strategy::volatility_adjusted_momentum::rank_assets_by_volatility_adjusted_momentum;
 use chrono::NaiveDate;
 use std::collections::{HashMap, HashSet};
 
@@ -113,6 +121,64 @@ pub fn run_momentum_topn_backtest(
     )
 }
 
+/// 运行波动调整动量轮动回测：按“收益 / 波动”排序，持有前 N 名。
+pub fn run_volatility_adjusted_momentum_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    lookback: usize,
+    rebalance_freq: usize,
+    top_n: usize,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            let ranking = rank_assets_by_volatility_adjusted_momentum(maps, dates, i, lookback);
+            let selected_count = effective_selected_count(top_n, ranking.len(), risk);
+            ranking
+                .into_iter()
+                .take(selected_count)
+                .map(|item| item.0)
+                .collect()
+        },
+    )
+}
+
+/// 运行反转 Bottom N 回测：选择回看期最弱的 N 个资产，做均值回归对照。
+pub fn run_reversal_bottomn_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    lookback: usize,
+    rebalance_freq: usize,
+    top_n: usize,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            let ranking = rank_assets_by_reversal(maps, dates, i, lookback);
+            let selected_count = effective_selected_count(top_n, ranking.len(), risk);
+            ranking
+                .into_iter()
+                .take(selected_count)
+                .map(|item| item.0)
+                .collect()
+        },
+    )
+}
+
 /// 运行单资产买入并持有回测（默认只在首个可交易日建仓）。
 pub fn run_buy_hold_single_backtest(
     asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
@@ -189,6 +255,181 @@ pub fn run_dual_momentum_backtest(
                 absolute_momentum_floor,
                 defensive_asset,
             )
+        },
+    )
+}
+
+/// 运行单资产绝对动量开关回测：基准资产达标则持有，否则进入防守资产或空仓。
+pub fn run_absolute_momentum_single_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    benchmark_asset: &str,
+    lookback: usize,
+    rebalance_freq: usize,
+    absolute_momentum_floor: f64,
+    defensive_asset: Option<&str>,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            select_absolute_momentum_single(
+                maps,
+                dates,
+                i,
+                lookback,
+                benchmark_asset,
+                absolute_momentum_floor,
+                defensive_asset,
+            )
+        },
+    )
+}
+
+/// 运行多资产绝对动量广度回测：持有所有满足绝对动量门槛的资产，否则回退到防守资产或空仓。
+pub fn run_absolute_momentum_breadth_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    lookback: usize,
+    rebalance_freq: usize,
+    absolute_momentum_floor: f64,
+    defensive_asset: Option<&str>,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            select_absolute_momentum_breadth(
+                maps,
+                dates,
+                i,
+                lookback,
+                absolute_momentum_floor,
+                defensive_asset,
+            )
+        },
+    )
+}
+
+/// 运行单资产均线择时回测：快线高于慢线则持有基准资产，否则进入防守资产或空仓。
+pub fn run_ma_timing_single_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    benchmark_asset: &str,
+    fast: usize,
+    slow: usize,
+    rebalance_freq: usize,
+    defensive_asset: Option<&str>,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        slow.saturating_sub(1),
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            select_ma_timing_single(maps, dates, i, fast, slow, benchmark_asset, defensive_asset)
+        },
+    )
+}
+
+/// 运行单资产突破择时回测：突破历史高点则持有基准资产，否则进入防守资产或空仓。
+pub fn run_breakout_timing_single_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    benchmark_asset: &str,
+    lookback: usize,
+    rebalance_freq: usize,
+    defensive_asset: Option<&str>,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            select_breakout_timing_single(
+                maps,
+                dates,
+                i,
+                lookback,
+                benchmark_asset,
+                defensive_asset,
+            )
+        },
+    )
+}
+
+/// 运行多资产突破轮动回测：从触发突破的资产中按强度择优持有。
+pub fn run_breakout_rotation_topn_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    lookback: usize,
+    rebalance_freq: usize,
+    top_n: usize,
+    defensive_asset: Option<&str>,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            select_breakout_rotation_topn(
+                maps,
+                dates,
+                i,
+                lookback,
+                top_n,
+                defensive_asset,
+            )
+        },
+    )
+}
+
+/// 运行双资产相对强弱切换回测：在两个候选之间择强持有。
+pub fn run_relative_strength_pair_backtest(
+    asset_maps: &HashMap<String, HashMap<NaiveDate, Bar>>,
+    primary_asset: &str,
+    alternate_asset: &str,
+    lookback: usize,
+    rebalance_freq: usize,
+    commission: f64,
+    slippage: f64,
+    risk: Option<&RiskConfig>,
+) -> MomentumTopNResult {
+    run_rotation_backtest(
+        asset_maps,
+        lookback,
+        rebalance_freq,
+        commission,
+        slippage,
+        risk,
+        |i, dates, maps| {
+            select_relative_strength_pair(maps, dates, i, lookback, primary_asset, alternate_asset)
         },
     )
 }
@@ -300,6 +541,8 @@ where
                     detail: "风控冷静期结束，组合恢复为可调仓状态，后续将在下一次调仓点重新入场".to_string(),
                 });
                 cooldown_until_index = None;
+                halted_by_risk = false;
+                halt_reason = None;
             }
         }
 
@@ -315,6 +558,7 @@ where
             };
             total_equity = total_before;
 
+            let mut skip_rebalance = false;
             if let Some(max_weight) = risk.and_then(|cfg| cfg.max_single_asset_weight) {
                 let required_assets = required_asset_count_for_max_weight(max_weight);
                 if !selected.is_empty() && selected.len() < required_assets {
@@ -336,11 +580,11 @@ where
                         equity_before: total_before,
                         equity_after: total_before,
                     });
-                    continue;
+                    skip_rebalance = true;
                 }
             }
 
-            if selected.is_empty() {
+            if !skip_rebalance && selected.is_empty() {
                 let target_values: HashMap<String, f64> = HashMap::new();
                 let turnover_amount = compute_turnover_amount(&holdings_value, &target_values);
                 let cost = turnover_amount * unit_cost;
@@ -358,61 +602,84 @@ where
                     equity_before: total_before,
                     equity_after: total_equity,
                 });
-                continue;
-            }
+            } else if !skip_rebalance {
+                let target_weight = 1.0 / selected.len() as f64;
+                let mut target_values = HashMap::new();
+                for asset in &selected {
+                    target_values.insert(asset.clone(), total_equity * target_weight);
+                }
 
-            let target_weight = 1.0 / selected.len() as f64;
-            let mut target_values = HashMap::new();
-            for asset in &selected {
-                target_values.insert(asset.clone(), total_equity * target_weight);
-            }
+                let turnover_amount = compute_turnover_amount(&holdings_value, &target_values);
+                let turnover_ratio = if total_before > 0.0 {
+                    turnover_amount / total_before
+                } else {
+                    0.0
+                };
 
-            let turnover_amount = compute_turnover_amount(&holdings_value, &target_values);
-            let turnover_ratio = if total_before > 0.0 {
-                turnover_amount / total_before
-            } else {
-                0.0
-            };
-            if let Some(limit) = risk.and_then(|cfg| cfg.max_rebalance_turnover) {
-                if turnover_ratio > limit {
-                    risk_events.push(RiskEventRow {
-                        date: date.to_string(),
-                        event_type: "turnover_guard".to_string(),
-                        detail: format!(
-                            "本次调仓换手率 {:.2}% 超过上限 {:.2}%，已跳过调仓",
-                            turnover_ratio * 100.0,
-                            limit * 100.0
-                        ),
-                    });
+                if let Some(limit) = risk.and_then(|cfg| cfg.max_rebalance_turnover) {
+                    if turnover_ratio > limit {
+                        risk_events.push(RiskEventRow {
+                            date: date.to_string(),
+                            event_type: "turnover_guard".to_string(),
+                            detail: format!(
+                                "本次调仓换手率 {:.2}% 超过上限 {:.2}%，已跳过调仓",
+                                turnover_ratio * 100.0,
+                                limit * 100.0
+                            ),
+                        });
+                        rebalance_rows.push(RebalanceRow {
+                            date: date.to_string(),
+                            selected_assets: "SKIPPED_BY_RISK".to_string(),
+                            turnover_amount,
+                            cost: 0.0,
+                            equity_before: total_before,
+                            equity_after: total_before,
+                        });
+                    } else {
+                        let cost = turnover_amount * unit_cost;
+                        total_equity -= cost;
+                        total_cost_paid += cost;
+
+                        holdings_value.clear();
+                        for asset in &selected {
+                            holdings_value.insert(asset.clone(), total_equity * target_weight);
+                        }
+
+                        if turnover_amount > 0.0 {
+                            trade_count += 1;
+                        }
+                        rebalance_rows.push(RebalanceRow {
+                            date: date.to_string(),
+                            selected_assets: selected.join("|"),
+                            turnover_amount,
+                            cost,
+                            equity_before: total_before,
+                            equity_after: total_equity,
+                        });
+                    }
+                } else {
+                    let cost = turnover_amount * unit_cost;
+                    total_equity -= cost;
+                    total_cost_paid += cost;
+
+                    holdings_value.clear();
+                    for asset in &selected {
+                        holdings_value.insert(asset.clone(), total_equity * target_weight);
+                    }
+
+                    if turnover_amount > 0.0 {
+                        trade_count += 1;
+                    }
                     rebalance_rows.push(RebalanceRow {
                         date: date.to_string(),
-                        selected_assets: "SKIPPED_BY_RISK".to_string(),
+                        selected_assets: selected.join("|"),
                         turnover_amount,
-                        cost: 0.0,
+                        cost,
                         equity_before: total_before,
-                        equity_after: total_before,
+                        equity_after: total_equity,
                     });
-                    continue;
                 }
             }
-            let cost = turnover_amount * unit_cost;
-            total_equity -= cost;
-            total_cost_paid += cost;
-
-            holdings_value.clear();
-            for asset in &selected {
-                holdings_value.insert(asset.clone(), total_equity * target_weight);
-            }
-
-            trade_count += 1;
-            rebalance_rows.push(RebalanceRow {
-                date: date.to_string(),
-                selected_assets: selected.join("|"),
-                turnover_amount,
-                cost,
-                equity_before: total_before,
-                equity_after: total_equity,
-            });
         }
 
         let equity_before_move = if holdings_value.is_empty() {
@@ -812,7 +1079,7 @@ mod tests {
             Some(&risk),
         );
 
-        assert!(result.summary.halted_by_risk);
+        assert!(!result.summary.halted_by_risk);
         assert!(result
             .risk_events
             .iter()
@@ -853,5 +1120,61 @@ mod tests {
             .rebalances
             .iter()
             .any(|row| row.selected_assets == "b"));
+    }
+
+    #[test]
+    fn skipped_rebalance_still_records_each_equity_point() {
+        let risk = RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: None,
+            max_daily_loss_limit: None,
+            max_drawdown_limit: None,
+            max_rebalance_turnover: Some(0.0),
+            stop_cooldown_days: None,
+        };
+
+        let result = run_momentum_topn_backtest(&sample_asset_maps(), 1, 1, 1, 0.0, 0.0, Some(&risk));
+
+        assert_eq!(result.equity_curve.len(), 4);
+        assert_eq!(
+            result.equity_curve.last().map(|(date, _)| *date),
+            Some(NaiveDate::parse_from_str("2024-01-05", "%Y-%m-%d").unwrap())
+        );
+        assert!(result
+            .equity_curve
+            .iter()
+            .all(|(_, equity)| (*equity - 1.0).abs() < 1e-12));
+    }
+
+    #[test]
+    fn zero_turnover_rebalance_does_not_increase_trade_count() {
+        let result = run_momentum_topn_backtest(&sample_two_asset_maps(), 1, 1, 1, 0.0, 0.0, None);
+
+        assert_eq!(result.summary.trade_count, 1);
+    }
+
+    #[test]
+    fn cooldown_recovery_clears_terminal_halt_reason() {
+        let risk = RiskConfig {
+            min_aligned_days: None,
+            max_single_asset_weight: None,
+            max_daily_loss_limit: Some(0.1),
+            max_drawdown_limit: None,
+            max_rebalance_turnover: None,
+            stop_cooldown_days: Some(2),
+        };
+
+        let result = run_momentum_topn_backtest(
+            &sample_cooldown_asset_maps(),
+            1,
+            1,
+            1,
+            0.0,
+            0.0,
+            Some(&risk),
+        );
+
+        assert!(!result.summary.halted_by_risk);
+        assert!(result.summary.halt_reason.is_none());
     }
 }

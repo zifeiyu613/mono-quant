@@ -1,0 +1,10 @@
+{
+  "experiment_name": "strategy_compare_core_v1_processed",
+  "strategy": "strategy_compare",
+  "compare_configs": [
+    "configs/momentum_topn.json",
+    "configs/dual_momentum.json",
+    "configs/risk_off_rotation.json"
+  ],
+  "output_dir": "output/strategy_compare_core_v1_processed"
+}

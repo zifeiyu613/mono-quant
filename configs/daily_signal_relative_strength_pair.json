@@ -1,0 +1,6 @@
+{
+  "experiment_name": "daily_signal_relative_strength_pair_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/relative_strength_pair.json",
+  "output_dir": "output/daily_signal_relative_strength_pair_v1"
+}

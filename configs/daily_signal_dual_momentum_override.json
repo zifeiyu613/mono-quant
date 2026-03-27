@@ -1,0 +1,12 @@
+{
+  "experiment_name": "daily_signal_dual_momentum_override_v1",
+  "strategy": "daily_signal",
+  "source_config": "configs/dual_momentum.json",
+  "manual_override": {
+    "mode": "force_cash",
+    "reason": "人工审核后决定今日不执行模型信号，先保持空仓",
+    "owner": "ops",
+    "decided_at": "2026-03-27 09:30:00"
+  },
+  "output_dir": "output/daily_signal_dual_momentum_override_v1"
+}

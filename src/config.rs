@@ -62,12 +62,23 @@ pub struct RiskConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct ManualOverrideConfig {
+    pub mode: String,
+    pub reason: String,
+    pub owner: Option<String>,
+    pub decided_at: Option<String>,
+    pub target_weights: Option<HashMap<String, f64>>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub experiment_name: String,
     #[serde(default = "default_strategy")]
     pub strategy: String,
     pub data_file: Option<String>,
     pub asset_files: Option<HashMap<String, String>>,
+    pub compare_configs: Option<Vec<String>>,
+    pub source_config: Option<String>,
     pub benchmark_asset: Option<String>,
     pub risk_assets: Option<Vec<String>>,
     pub defensive_asset: Option<String>,
@@ -85,6 +96,8 @@ pub struct AppConfig {
     pub slippage: Option<f64>,
     pub stamp_tax_sell: Option<f64>,
     pub risk: Option<RiskConfig>,
+    pub manual_override: Option<ManualOverrideConfig>,
+    pub execution_input: Option<String>,
     pub research: Option<ResearchConfig>,
     pub output_dir: String,
 }
